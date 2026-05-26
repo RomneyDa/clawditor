@@ -183,6 +183,12 @@ function hash(value) {
   return createHash("sha256").update(value).digest("hex").slice(0, 16);
 }
 
+function logStatus(options, message) {
+  if (!options.json) {
+    process.stdout.write(`${message}\n`);
+  }
+}
+
 function readJsonCommand(command, args, cwd) {
   const result = runSync(command, args, { cwd, capture: true, allowFailure: true });
   if (result.status !== 0) return null;
@@ -194,6 +200,7 @@ function readJsonCommand(command, args, cwd) {
 }
 
 function preflight(options) {
+  logStatus(options, "preflight: checking required tools");
   const missing = [];
   const required = ["node"];
   if (options.suites.has("github")) required.push("gh");
@@ -229,13 +236,15 @@ function preflight(options) {
     ? localGitInfo(options.openclawRoot)
     : { status: "not required", head: "downloadable/github mode" };
 
-  return {
+  const result = {
     openclawStatus: openclaw.status,
     openclawHead: openclaw.head,
     openclawRoot: options.openclawRoot,
     crabpotRoot: options.crabpotRoot,
     crabboxWrapper: options.openclawRoot ? resolve(options.openclawRoot, "scripts/crabbox-wrapper.mjs") : null,
   };
+  logStatus(options, `preflight: ok (${required.join(", ")})`);
+  return result;
 }
 
 function localGitInfo(cwd) {
@@ -360,8 +369,10 @@ function activeWorkflowRun(workflow, options) {
 }
 
 function launchWorkflow(workflow, candidate, profile, options) {
+  logStatus(options, `github: checking ${workflow}`);
   const existing = activeWorkflowRun(workflow, options);
   if (existing) {
+    logStatus(options, `github: reusing active ${workflow} run ${existing.databaseId}`);
     return {
       type: "github",
       workflow,
@@ -381,9 +392,11 @@ function launchWorkflow(workflow, candidate, profile, options) {
   }
 
   if (options.dryRun) {
+    logStatus(options, `github: dry-run ${workflow}`);
     return { type: "github", workflow, action: "dry-run", command: ["gh", ...args].join(" ") };
   }
 
+  logStatus(options, `github: starting ${workflow}`);
   runSync("gh", args);
   const recent = readJsonCommand("gh", [
     "run",
@@ -400,7 +413,7 @@ function launchWorkflow(workflow, candidate, profile, options) {
     "databaseId,status,conclusion,createdAt,url,workflowName,displayTitle",
   ]);
   const run = Array.isArray(recent) ? recent[0] : null;
-  return {
+  const result = {
     type: "github",
     workflow,
     action: "started",
@@ -408,6 +421,8 @@ function launchWorkflow(workflow, candidate, profile, options) {
     url: run?.url ?? null,
     status: run?.status ?? "unknown",
   };
+  logStatus(options, `github: started ${workflow}${result.id ? ` run ${result.id}` : ""}`);
+  return result;
 }
 
 function crabboxCommand(lane, candidate, options) {
@@ -493,8 +508,10 @@ function crabboxCommand(lane, candidate, options) {
 function runCrabboxLane(lane, candidate, options) {
   const command = crabboxCommand(lane, candidate, options);
   if (options.dryRun) {
+    logStatus(options, `crabbox: dry-run ${lane}`);
     return { type: "crabbox", lane, action: "dry-run", command: command.join(" ") };
   }
+  logStatus(options, `crabbox: running ${lane}`);
   const startedAt = new Date().toISOString();
   const result = spawnSync(command[0], command.slice(1), {
     cwd: options.openclawRoot,
@@ -504,7 +521,7 @@ function runCrabboxLane(lane, candidate, options) {
   const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
   const idMatch = output.match(/\b(?:tbx|cbx)_[A-Za-z0-9_-]+\b/u);
   const urlMatch = output.match(/https:\/\/github\.com\/openclaw\/openclaw\/actions\/runs\/[0-9]+/u);
-  return {
+  const run = {
     type: "crabbox",
     lane,
     action: "ran",
@@ -515,7 +532,16 @@ function runCrabboxLane(lane, candidate, options) {
     ok: result.status === 0,
     outputTail: output.split("\n").slice(-30).join("\n").trim(),
   };
+  logStatus(options, `crabbox: ${lane} ${run.ok ? "passed" : `failed exit=${run.exitCode}`}${run.id ? ` (${run.id})` : ""}`);
+  return run;
 }
+
+const downloadLaneDescriptions = {
+  "package-smoke": "install candidate package in a temp home, run version and doctor",
+  "cli-smoke": "install candidate package in a temp home, check core CLI help surfaces",
+  crabpot: "clone Crabpot into temp state and run static/plugin-inspector compatibility checks",
+  "prompt-pack": "verify candidate package is runnable through npx and write prompt pack metadata",
+};
 
 function downloadableCommand(lane, candidate) {
   const candidatePackage = candidate.kind === "package" ? candidate.label : "openclaw@beta";
@@ -564,8 +590,10 @@ function downloadableCommand(lane, candidate) {
 function runDownloadLane(lane, candidate, options) {
   const command = downloadableCommand(lane, candidate);
   if (options.dryRun) {
+    logStatus(options, `download: dry-run ${lane} - ${downloadLaneDescriptions[lane] ?? "run downloadable lane"}`);
     return { type: "download", lane, action: "dry-run", command: command.join(" ") };
   }
+  logStatus(options, `download: running ${lane} - ${downloadLaneDescriptions[lane] ?? "run downloadable lane"}`);
   const startedAt = new Date().toISOString();
   const result = spawnSync(command[0], command.slice(1), {
     cwd: process.cwd(),
@@ -573,7 +601,7 @@ function runDownloadLane(lane, candidate, options) {
     stdio: ["ignore", "pipe", "pipe"],
   });
   const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
-  return {
+  const run = {
     type: "download",
     lane,
     action: "ran",
@@ -582,6 +610,8 @@ function runDownloadLane(lane, candidate, options) {
     ok: result.status === 0,
     outputTail: output.split("\n").slice(-30).join("\n").trim(),
   };
+  logStatus(options, `download: ${lane} ${run.ok ? "passed" : `failed exit=${run.exitCode}`}`);
+  return run;
 }
 
 function runLocalCrabpot(candidate, options) {
@@ -593,9 +623,11 @@ function runLocalCrabpot(candidate, options) {
   const results = [];
   for (const [cmd, args] of commands) {
     if (options.dryRun) {
+      logStatus(options, `crabpot: dry-run ${cmd} ${args.join(" ")}`);
       results.push({ command: [cmd, ...args].join(" "), action: "dry-run" });
       continue;
     }
+    logStatus(options, `crabpot: running ${cmd} ${args.join(" ")}`);
     const result = spawnSync(cmd, args, {
       cwd: options.crabpotRoot,
       encoding: "utf8",
@@ -607,6 +639,7 @@ function runLocalCrabpot(candidate, options) {
       ok: result.status === 0,
       outputTail: `${result.stdout ?? ""}${result.stderr ?? ""}`.split("\n").slice(-20).join("\n").trim(),
     });
+    logStatus(options, `crabpot: ${cmd} ${args.join(" ")} ${result.status === 0 ? "passed" : `failed exit=${result.status}`}`);
   }
   return {
     type: "crabpot",
@@ -741,8 +774,15 @@ async function main() {
   }));
   const outputDir = resolve(options.outputRoot, `clawlab-${new Date().toISOString().replaceAll(/[:.]/gu, "-")}-${fingerprint}`);
   mkdirSync(outputDir, { recursive: true });
+  logStatus(options, `clawlab: candidate ${candidate.label}`);
+  logStatus(options, `clawlab: profile ${options.profile}`);
+  logStatus(options, `clawlab: suites ${[...options.suites].join(", ") || "none"}`);
+  logStatus(options, `clawlab: writing artifacts to ${relative(process.cwd(), outputDir)}`);
 
   const preflightData = preflight(options);
+  if (!options.suites.has("github")) {
+    logStatus(options, "github: skipped (use --remote or --suite github to enable)");
+  }
   const github = workflowPlan(options, candidate, profile).map((workflow) =>
     launchWorkflow(workflow, candidate, profile, options)
   );
@@ -763,6 +803,9 @@ async function main() {
 
   const crabpot = runLocalCrabpot(candidate, options);
   const prompts = options.suites.has("prompts") ? writePromptManifest(outputDir) : [];
+  if (options.suites.has("prompts")) {
+    logStatus(options, `prompts: wrote prompt pack (${prompts.length} prompts)`);
+  }
 
   const summary = {
     candidate,
@@ -783,6 +826,7 @@ async function main() {
     summary.github = await watchGithubRuns(summary.github);
   }
   summary.verdict = verdictFor(summary);
+  logStatus(options, `summary: writing ${relative(process.cwd(), resolve(outputDir, "summary.md"))}`);
   writeSummary(outputDir, summary);
 
   if (options.json) {
