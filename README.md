@@ -65,10 +65,11 @@ when you explicitly want a fresh run.
 
 ## Profiles
 
-- `smoke`: focused package/Kova plus downloadable package smoke and Crabpot.
-- `standard`: umbrella release validation plus downloadable package smoke,
-  Crabpot, and package acceptance delegation.
-- `full`: full release profile plus prompt-pack smoke.
+- `smoke`: fastest meaningful local package install, version, and doctor check.
+- `standard`: default. Runs package install/doctor, CLI bootstrap help checks,
+  and Crabpot/plugin-inspector compatibility from downloads.
+- `full`: standard local checks plus prompt-pack smoke. With `--remote`, it
+  asks GitHub for the broader full release profile.
 
 ## Suites
 

@@ -44,4 +44,21 @@ describe("clawlab cli", () => {
     assert.ok(summary.download.some((run) => run.lane === "package-smoke"));
     assert.equal(summary.verdict, "DRY_RUN");
   });
+
+  it("uses standard as a meaningful default profile", () => {
+    const output = execFileSync("node", [
+      "bin/clawlab.mjs",
+      "test",
+      "openclaw@beta",
+      "--dry-run",
+      "--json",
+    ], { encoding: "utf8" });
+    const summary = JSON.parse(output);
+    assert.equal(summary.profile, "standard");
+    assert.deepEqual(
+      summary.download.map((run) => run.lane),
+      ["package-smoke", "cli-smoke", "crabpot"],
+    );
+    assert.equal(summary.github.length, 0);
+  });
 });

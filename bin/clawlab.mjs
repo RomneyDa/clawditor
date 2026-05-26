@@ -15,7 +15,7 @@ const profiles = {
     packageAcceptanceProfile: "smoke",
     kovaProfile: "smoke",
     kovaRepeat: "1",
-    downloadLanes: ["package-smoke", "crabpot"],
+    downloadLanes: ["package-smoke"],
   },
   standard: {
     releaseProfile: "beta",
@@ -23,7 +23,7 @@ const profiles = {
     packageAcceptanceProfile: "package",
     kovaProfile: "diagnostic",
     kovaRepeat: "3",
-    downloadLanes: ["package-smoke", "crabpot", "package-acceptance"],
+    downloadLanes: ["package-smoke", "cli-smoke", "crabpot"],
   },
   full: {
     releaseProfile: "full",
@@ -31,7 +31,7 @@ const profiles = {
     packageAcceptanceProfile: "full",
     kovaProfile: "release",
     kovaRepeat: "3",
-    downloadLanes: ["package-smoke", "crabpot", "package-acceptance", "prompt-pack"],
+    downloadLanes: ["package-smoke", "cli-smoke", "crabpot", "prompt-pack"],
   },
 };
 
@@ -452,7 +452,25 @@ function crabboxCommand(lane, candidate, options) {
     "package-smoke": candidate.kind === "package"
       ? `echo CRABBOX_PHASE:doctor && ${packageDoctor}`
       : "echo CRABBOX_PHASE:doctor && corepack pnpm release:check",
-    "package-acceptance": "echo CRABBOX_PHASE:upgrade && corepack pnpm test:docker:published-upgrade-survivor",
+    "cli-smoke": candidate.kind === "package"
+      ? [
+        "echo CRABBOX_PHASE:cli-smoke",
+        candidateExport,
+        "tmp=$(mktemp -d)",
+        "export HOME=\"$tmp/home\"",
+        "export OPENCLAW_HOME=\"$tmp/openclaw\"",
+        "export OPENCLAW_STATE_DIR=\"$tmp/state\"",
+        "npm install -g \"$OPENCLAW_CANDIDATE_PACKAGE\"",
+        "openclaw --help >/tmp/clawlab-openclaw-help.txt",
+        "openclaw doctor --help >/tmp/clawlab-doctor-help.txt",
+        "openclaw config --help >/tmp/clawlab-config-help.txt",
+        "openclaw plugins --help >/tmp/clawlab-plugins-help.txt",
+        "test -s /tmp/clawlab-openclaw-help.txt",
+        "test -s /tmp/clawlab-doctor-help.txt",
+        "test -s /tmp/clawlab-config-help.txt",
+        "test -s /tmp/clawlab-plugins-help.txt",
+      ].join(" && ")
+      : "echo CRABBOX_PHASE:cli-smoke && corepack pnpm openclaw --help >/tmp/clawlab-openclaw-help.txt && test -s /tmp/clawlab-openclaw-help.txt",
     crabpot: [
       "echo CRABBOX_PHASE:crabpot",
       "tmp=$(mktemp -d)",
@@ -501,15 +519,29 @@ function runCrabboxLane(lane, candidate, options) {
 
 function downloadableCommand(lane, candidate) {
   const candidatePackage = candidate.kind === "package" ? candidate.label : "openclaw@beta";
+  const isolatedPackageInstall = [
+    "tmp=$(mktemp -d)",
+    "export HOME=\"$tmp/home\"",
+    "export OPENCLAW_HOME=\"$tmp/openclaw\"",
+    "export OPENCLAW_STATE_DIR=\"$tmp/state\"",
+    `npm install -g ${quote(candidatePackage)}`,
+  ];
   const commands = {
     "package-smoke": [
-      "tmp=$(mktemp -d)",
-      "export HOME=\"$tmp/home\"",
-      "export OPENCLAW_HOME=\"$tmp/openclaw\"",
-      "export OPENCLAW_STATE_DIR=\"$tmp/state\"",
-      `npm install -g ${quote(candidatePackage)}`,
+      ...isolatedPackageInstall,
       "openclaw --version",
       "openclaw doctor --non-interactive",
+    ].join(" && "),
+    "cli-smoke": [
+      ...isolatedPackageInstall,
+      "openclaw --help >/tmp/clawlab-openclaw-help.txt",
+      "openclaw doctor --help >/tmp/clawlab-doctor-help.txt",
+      "openclaw config --help >/tmp/clawlab-config-help.txt",
+      "openclaw plugins --help >/tmp/clawlab-plugins-help.txt",
+      "test -s /tmp/clawlab-openclaw-help.txt",
+      "test -s /tmp/clawlab-doctor-help.txt",
+      "test -s /tmp/clawlab-config-help.txt",
+      "test -s /tmp/clawlab-plugins-help.txt",
     ].join(" && "),
     crabpot: [
       "tmp=$(mktemp -d)",
@@ -518,9 +550,6 @@ function downloadableCommand(lane, candidate) {
       "npm install",
       "npm run check",
       "npm run plugin-inspector:smoke",
-    ].join(" && "),
-    "package-acceptance": [
-      "echo 'Package Acceptance runs through GitHub workflows; local downloadable lane records that workflow coverage is delegated.'",
     ].join(" && "),
     "prompt-pack": [
       `npx -y -p ${quote(candidatePackage)} openclaw --version`,
