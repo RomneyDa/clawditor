@@ -7,7 +7,7 @@ One-command OpenClaw beta and release-candidate validation launcher.
 From GitHub:
 
 ```sh
-npm install -g github:RomneyDa/clawlab
+npm install -g https://github.com/RomneyDa/clawlab/archive/refs/heads/main.tar.gz
 ```
 
 From a local checkout:
