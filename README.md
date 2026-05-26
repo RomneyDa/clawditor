@@ -2,11 +2,37 @@
 
 One-command OpenClaw beta and release-candidate validation launcher.
 
+## Install
+
+From GitHub:
+
 ```sh
-npm run beta -- --package openclaw@beta
-npm run beta -- --package openclaw@2026.5.26-beta.1 --profile full
-npm run beta -- --ref release/2026.5.26 --profile smoke
+npm install -g github:RomneyDa/clawlab
 ```
+
+From a local checkout:
+
+```sh
+npm install -g .
+```
+
+For local development:
+
+```sh
+npm link
+```
+
+Then run it from any directory:
+
+```sh
+clawlab beta --package openclaw@beta
+clawlab beta --package openclaw@2026.5.26-beta.1 --profile full
+clawlab beta --ref release/2026.5.26 --profile smoke
+```
+
+`clawlab` discovers the OpenClaw checkout from the current directory, common
+sibling checkout layouts, or `OPENCLAW_ROOT`. Crabpot is discovered similarly
+or through `CRABPOT_ROOT`.
 
 ## Duplicate workflow control
 
@@ -33,9 +59,9 @@ when you explicitly want a fresh run.
 Use `--suite` to limit work:
 
 ```sh
-npm run beta -- --package openclaw@beta --suite github
-npm run beta -- --package openclaw@beta --suite crabbox,crabpot
-npm run beta -- --package openclaw@beta --dry-run
+clawlab beta --package openclaw@beta --suite github
+clawlab beta --package openclaw@beta --suite crabbox,crabpot
+clawlab beta --package openclaw@beta --dry-run
 ```
 
 Outputs are written under `.artifacts/clawlab-*` with:

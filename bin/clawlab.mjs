@@ -1,14 +1,12 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const defaultOpenclawRoot = resolve(root, "../openclaw");
-const defaultCrabpotRoot = resolve(root, "../crabpot");
-const defaultOutputRoot = resolve(root, ".artifacts");
 const githubRepo = "openclaw/openclaw";
 
 const profiles = {
@@ -60,14 +58,15 @@ Options:
 }
 
 function parseArgs(argv) {
+  const defaults = defaultPaths();
   if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h") {
     return {
       command: argv[0] ?? "",
       help: true,
       profile: "standard",
-      openclawRoot: defaultOpenclawRoot,
-      crabpotRoot: defaultCrabpotRoot,
-      outputRoot: defaultOutputRoot,
+      openclawRoot: defaults.openclawRoot,
+      crabpotRoot: defaults.crabpotRoot,
+      outputRoot: defaults.outputRoot,
       githubMode: "umbrella",
       forceWorkflows: false,
       dedupe: true,
@@ -81,9 +80,9 @@ function parseArgs(argv) {
   const options = {
     command,
     profile: "standard",
-    openclawRoot: defaultOpenclawRoot,
-    crabpotRoot: defaultCrabpotRoot,
-    outputRoot: defaultOutputRoot,
+    openclawRoot: defaults.openclawRoot,
+    crabpotRoot: defaults.crabpotRoot,
+    outputRoot: defaults.outputRoot,
     githubMode: "umbrella",
     forceWorkflows: false,
     dedupe: true,
@@ -122,6 +121,71 @@ function parseArgs(argv) {
   }
 
   return options;
+}
+
+function defaultPaths() {
+  const openclawRoot = resolveDefaultOpenclawRoot();
+  return {
+    openclawRoot,
+    crabpotRoot: resolveDefaultCrabpotRoot(openclawRoot),
+    outputRoot: resolve(process.cwd(), ".artifacts"),
+  };
+}
+
+function resolveDefaultOpenclawRoot() {
+  if (process.env.OPENCLAW_ROOT) {
+    return resolve(process.env.OPENCLAW_ROOT);
+  }
+  const fromCwd = findRepoRoot(process.cwd(), "openclaw");
+  if (fromCwd) return fromCwd;
+
+  const candidates = [
+    resolve(process.cwd(), "openclaw"),
+    resolve(process.cwd(), "../openclaw"),
+    resolve(root, "../openclaw"),
+    resolve(homedir(), "Documents/code/openclaw/openclaw"),
+  ];
+  return candidates.find(isOpenclawRepo) ?? candidates[0];
+}
+
+function resolveDefaultCrabpotRoot(openclawRoot) {
+  if (process.env.CRABPOT_ROOT) {
+    return resolve(process.env.CRABPOT_ROOT);
+  }
+  const fromCwd = findRepoRoot(process.cwd(), "crabpot");
+  if (fromCwd) return fromCwd;
+
+  const candidates = [
+    resolve(openclawRoot, "../crabpot"),
+    resolve(process.cwd(), "crabpot"),
+    resolve(process.cwd(), "../crabpot"),
+    resolve(root, "../crabpot"),
+    resolve(homedir(), "Documents/code/openclaw/crabpot"),
+  ];
+  return candidates.find(isCrabpotRepo) ?? candidates[0];
+}
+
+function findRepoRoot(start, expectedName) {
+  let current = resolve(start);
+  while (true) {
+    if (expectedName === "openclaw" && isOpenclawRepo(current)) return current;
+    if (expectedName === "crabpot" && isCrabpotRepo(current)) return current;
+    const next = dirname(current);
+    if (next === current) return null;
+    current = next;
+  }
+}
+
+function isOpenclawRepo(path) {
+  return existsSync(resolve(path, "package.json")) &&
+    existsSync(resolve(path, "scripts/crabbox-wrapper.mjs")) &&
+    existsSync(resolve(path, ".github/workflows/full-release-validation.yml"));
+}
+
+function isCrabpotRepo(path) {
+  return existsSync(resolve(path, "package.json")) &&
+    existsSync(resolve(path, "crabpot.config.json")) &&
+    existsSync(resolve(path, "scripts/run-static-suite.mjs"));
 }
 
 function runSync(command, args, opts = {}) {

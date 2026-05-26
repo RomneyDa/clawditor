@@ -1,9 +1,20 @@
 {
   "name": "clawlab",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "description": "One-command OpenClaw beta and release-candidate validation launcher.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/RomneyDa/clawlab.git"
+  },
+  "license": "MIT",
+  "preferGlobal": true,
+  "files": [
+    "bin/",
+    "prompts/",
+    "README.md",
+    "package.json"
+  ],
   "bin": {
     "clawlab": "bin/clawlab.mjs"
   },
