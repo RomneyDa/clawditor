@@ -222,6 +222,39 @@ function streamProcessOutput(options, prefix, line) {
   }
 }
 
+function isHighlightLine(line) {
+  return /^OpenClaw \S+/u.test(line) ||
+    /^Status: /u.test(line) ||
+    /^(Breakages|Issues|Artifacts): /u.test(line) ||
+    /^crabpot report check:/u.test(line) ||
+    /^report targets:/u.test(line) ||
+    /^contract capture:/u.test(line) ||
+    /^synthetic probes:/u.test(line) ||
+    /^cold import readiness:/u.test(line) ||
+    /^workspace plan:/u.test(line) ||
+    /^platform probes:/u.test(line) ||
+    /^runtime profile:/u.test(line) ||
+    /^contract coverage /u.test(line) ||
+    /^ci policy:/u.test(line) ||
+    /^generated surface:/u.test(line) ||
+    /^openclaw plugin contract check:/u.test(line) ||
+    /^added \d+ packages/u.test(line) ||
+    /^up to date, audited /u.test(line) ||
+    /^ℹ (tests|pass|fail|duration_ms) /u.test(line) ||
+    /Doctor complete/u.test(line);
+}
+
+function rememberHighlight(highlights, line) {
+  const trimmed = line.trim();
+  if (!trimmed || !isHighlightLine(trimmed) || highlights.includes(trimmed)) {
+    return;
+  }
+  highlights.push(trimmed);
+  if (highlights.length > 40) {
+    highlights.splice(0, highlights.length - 40);
+  }
+}
+
 function missingCommandError(missing) {
   const lines = [`missing required command(s): ${missing.join(", ")}`];
   if (missing.includes("git-lfs")) {
@@ -577,6 +610,7 @@ async function runCrabboxLane(lane, candidate, options) {
     url: urlMatch?.[0] ?? null,
     startedAt,
     ok: result.exitCode === 0,
+    highlights: result.highlights,
     outputTail: result.outputTail,
   };
   logStatus(options, `crabbox: ${lane} ${run.ok ? "passed" : `failed exit=${run.exitCode}`}${run.id ? ` (${run.id})` : ""}`);
@@ -708,6 +742,7 @@ function runLiveProcess(command, prefix, options, opts = {}) {
       stdio: ["ignore", "pipe", "pipe"],
     });
     const lines = [];
+    const highlights = [];
     let currentStep = "starting";
     let pending = "";
     let spawnError = null;
@@ -726,6 +761,7 @@ function runLiveProcess(command, prefix, options, opts = {}) {
       if (lines.length > 200) {
         lines.splice(0, lines.length - 200);
       }
+      rememberHighlight(highlights, line);
       streamProcessOutput(options, prefix, line);
     };
 
@@ -756,6 +792,7 @@ function runLiveProcess(command, prefix, options, opts = {}) {
       }
       resolveRun({
         exitCode: code ?? (spawnError ? 1 : 0),
+        highlights,
         output: lines.join("\n").trim(),
         outputTail: lines.slice(-30).join("\n").trim(),
       });
@@ -785,6 +822,7 @@ async function runDownloadLane(lane, candidate, options) {
     exitCode: result.exitCode,
     startedAt,
     ok: result.exitCode === 0,
+    highlights: result.highlights,
     outputTail: result.outputTail,
   };
   logStatus(options, `download: ${lane} ${run.ok ? "passed" : `failed exit=${run.exitCode}`}`);
@@ -815,6 +853,7 @@ async function runLocalCrabpot(candidate, options) {
       command: [cmd, ...args].join(" "),
       exitCode: result.exitCode,
       ok: result.exitCode === 0,
+      highlights: result.highlights,
       outputTail: result.outputTail,
     });
     logStatus(options, `crabpot: ${cmd} ${args.join(" ")} ${result.exitCode === 0 ? "passed" : `failed exit=${result.exitCode}`}`);
@@ -846,6 +885,82 @@ function writePromptManifest(outputDir) {
   return prompts;
 }
 
+function statusText(run) {
+  if (run.action === "dry-run") return "dry-run";
+  if (run.ok === true) return `pass${run.exitCode !== undefined ? ` (exit ${run.exitCode})` : ""}`;
+  if (run.ok === false) return `fail${run.exitCode !== undefined ? ` (exit ${run.exitCode})` : ""}`;
+  if (run.exitCode !== undefined) return `exit ${run.exitCode}`;
+  return run.action ?? "unknown";
+}
+
+function fencedBlock(value) {
+  const text = String(value ?? "")
+    .trim()
+    .split("\n")
+    .map((line) => line.length > 240 ? `${line.slice(0, 237)}...` : line)
+    .join("\n");
+  if (!text) return [];
+  return ["", "```text", text, "```"];
+}
+
+function downloadSummaryLines(run) {
+  const lines = [
+    `### ${run.lane}`,
+    "",
+    `- status: ${statusText(run)}`,
+    `- purpose: ${downloadLaneDescriptions[run.lane] ?? "downloadable lane"}`,
+    `- started: ${run.startedAt ?? "not started"}`,
+  ];
+  if (run.command) lines.push(`- command: \`${run.command}\``);
+  if (run.highlights?.length) {
+    lines.push("", "Highlights:", ...run.highlights.map((line) => `- ${line}`));
+  }
+  if (run.outputTail) {
+    lines.push("", "Output tail:", ...fencedBlock(run.outputTail));
+  }
+  return [...lines, ""];
+}
+
+function crabboxSummaryLines(run) {
+  const lines = [
+    `### ${run.lane}`,
+    "",
+    `- status: ${statusText(run)}`,
+    `- started: ${run.startedAt ?? "not started"}`,
+  ];
+  if (run.id) lines.push(`- provider run id: ${run.id}`);
+  if (run.url) lines.push(`- url: ${run.url}`);
+  if (run.command) lines.push(`- command: \`${run.command}\``);
+  if (run.highlights?.length) {
+    lines.push("", "Highlights:", ...run.highlights.map((line) => `- ${line}`));
+  }
+  if (run.outputTail) {
+    lines.push("", "Output tail:", ...fencedBlock(run.outputTail));
+  }
+  return [...lines, ""];
+}
+
+function localCrabpotSummaryLines(crabpot) {
+  if (!crabpot) {
+    return [
+      "- skipped: local Crabpot suite was not selected. The default standard profile runs Crabpot through the downloadable lane above.",
+      "",
+    ];
+  }
+  const lines = [`- status: ${crabpot.ok ? "pass" : "fail"}`, ""];
+  for (const result of crabpot.results) {
+    lines.push(`### ${result.command}`, "", `- status: ${statusText(result)}`);
+    if (result.highlights?.length) {
+      lines.push("", "Highlights:", ...result.highlights.map((line) => `- ${line}`));
+    }
+    if (result.outputTail) {
+      lines.push("", "Output tail:", ...fencedBlock(result.outputTail));
+    }
+    lines.push("");
+  }
+  return lines;
+}
+
 function writeSummary(outputDir, summary) {
   writeFileSync(resolve(outputDir, "manifest.json"), `${JSON.stringify(summary, null, 2)}\n`);
   const lines = [
@@ -855,21 +970,36 @@ function writeSummary(outputDir, summary) {
     `- fingerprint: ${summary.fingerprint}`,
     `- openclaw: ${summary.preflight.openclawHead}`,
     `- status: ${summary.verdict}`,
+    `- artifacts: ${relative(process.cwd(), outputDir)}`,
+    `- cache: ${summary.preflight.cacheRoot}`,
     "",
     "## GitHub",
-    ...summary.github.map((run) => `- ${run.workflow}: ${run.action}${run.id ? ` ${run.id}` : ""}${run.url ? ` ${run.url}` : ""}`),
+    ...(summary.github.length > 0
+      ? summary.github.map((run) => `- ${run.workflow}: ${run.action}${run.id ? ` ${run.id}` : ""}${run.url ? ` ${run.url}` : ""}`)
+      : ["- skipped: remote GitHub workflows were not selected. Use `--remote` or `--suite github` to enable."]),
     "",
     "## Downloadable",
-    ...summary.download.map((run) => `- ${run.lane}: ${run.action}${run.exitCode !== undefined ? ` exit=${run.exitCode}` : ""}`),
+    ...(summary.download.length > 0
+      ? summary.download.flatMap((run) => downloadSummaryLines(run))
+      : ["- skipped: downloadable lanes were not selected.", ""]),
     "",
     "## Crabbox",
-    ...summary.crabbox.map((run) => `- ${run.lane}: ${run.action}${run.id ? ` ${run.id}` : ""}${run.exitCode !== undefined ? ` exit=${run.exitCode}` : ""}${run.url ? ` ${run.url}` : ""}`),
+    ...(summary.crabbox.length > 0
+      ? summary.crabbox.flatMap((run) => crabboxSummaryLines(run))
+      : ["- skipped: Crabbox was not selected. Use `--suite crabbox --repo <local-openclaw-checkout>` to enable remote Testbox proof.", ""]),
     "",
-    "## Crabpot",
-    summary.crabpot ? `- local: ${summary.crabpot.ok ? "pass" : "fail"}` : "- skipped",
+    "## Local Crabpot",
+    ...localCrabpotSummaryLines(summary.crabpot),
     "",
     "## Prompts",
-    ...summary.prompts.map((prompt) => `- ${prompt.name}`),
+    ...(summary.prompts.length > 0
+      ? summary.prompts.map((prompt) => `- ${prompt.name} (${prompt.path})`)
+      : ["- skipped: prompt manifest generation was not selected."]),
+    "",
+    "## Files",
+    "- `manifest.json`: full structured result data",
+    "- `summary.md`: this review summary",
+    ...(summary.prompts.length > 0 ? ["- `prompt-pack.json`: prompt preset manifest"] : []),
     "",
   ];
   writeFileSync(resolve(outputDir, "summary.md"), `${lines.join("\n")}\n`);
