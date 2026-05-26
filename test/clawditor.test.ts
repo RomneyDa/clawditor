@@ -89,6 +89,7 @@ describe("clawditor cli", () => {
     const summary = JSON.parse(output);
     assert.equal(summary.kova.profile, "diagnostic");
     assert.match(summary.kova.command, /kova_target="local-build:/u);
+    assert.match(summary.kova.command, /pnpm --dir "\$openclaw_target_repo" install --frozen-lockfile/u);
     assert.doesNotMatch(summary.kova.command, /kova_target="npm:/u);
   });
 });

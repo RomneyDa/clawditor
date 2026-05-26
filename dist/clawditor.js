@@ -218,6 +218,19 @@ function ensureCachedOpenclawCheckout(options) {
     syncGitCheckout(path, "https://github.com/openclaw/openclaw.git", "main", "OpenClaw", options);
     return path;
 }
+function ensureCachedCrabboxCheckout(options) {
+    const path = resolve(options.cacheRoot, "repos/crabbox");
+    if (options.dryRun)
+        return path;
+    if (!commandExists("go")) {
+        throw new Error("go is required to build the cached Crabbox binary for the default Crabbox suite");
+    }
+    syncGitCheckout(path, "https://github.com/openclaw/crabbox.git", "main", "Crabbox", options);
+    mkdirSync(resolve(path, "bin"), { recursive: true });
+    logStatus(options, "preflight: building cached Crabbox binary");
+    runSync("go", ["build", "-o", resolve(path, "bin/crabbox"), "./cmd/crabbox"], { cwd: path });
+    return path;
+}
 function ensureCachedCrabpotCheckout(options) {
     const path = resolve(options.cacheRoot, "repos/crabpot-suite");
     if (options.dryRun)
@@ -241,6 +254,9 @@ function runSync(command, args, opts = {}) {
 }
 function commandExists(command) {
     return spawnSync("sh", ["-lc", `command -v ${quote(command)} >/dev/null 2>&1`]).status === 0;
+}
+function crabboxBinaryAvailable(openclawRoot) {
+    return existsSync(resolve(dirname(openclawRoot), "crabbox/bin/crabbox")) || commandExists("crabbox");
 }
 function quote(value) {
     return `'${String(value).replaceAll("'", "'\\''")}'`;
@@ -328,6 +344,10 @@ function preflight(options, profile) {
         required.push("gh");
     if (options.suites.has("download") || options.suites.has("kova"))
         required.push("npm", "npx");
+    if (options.suites.has("kova") &&
+        profile.kovaProfile !== "smoke") {
+        required.push("pnpm");
+    }
     if (options.suites.has("download") ||
         options.suites.has("kova") ||
         options.suites.has("crabbox") ||
@@ -351,15 +371,23 @@ function preflight(options, profile) {
     if (missing.length > 0) {
         throw new Error(missingCommandError(missing));
     }
+    let openclawFromCache = false;
     if (options.suites.has("crabbox")) {
         if (!options.openclawRoot) {
             options.openclawRoot = ensureCachedOpenclawCheckout(options);
+            openclawFromCache = true;
         }
         else if (!isOpenclawRepo(options.openclawRoot)) {
             throw new Error(`--repo is not an OpenClaw checkout: ${options.openclawRoot}`);
         }
         if (!options.dryRun && !isOpenclawRepo(options.openclawRoot)) {
             throw new Error(`OpenClaw checkout at ${options.openclawRoot} is missing expected files`);
+        }
+        if (!options.dryRun && openclawFromCache) {
+            ensureCachedCrabboxCheckout(options);
+        }
+        if (!options.dryRun && !crabboxBinaryAvailable(options.openclawRoot)) {
+            throw new Error(`Crabbox binary not found for ${options.openclawRoot}. Clone openclaw/crabbox next to that checkout or add crabbox to PATH.`);
         }
     }
     if (options.suites.has("crabpot")) {
@@ -373,7 +401,10 @@ function preflight(options, profile) {
             throw new Error(`Crabpot checkout at ${options.crabpotRoot} is missing expected files`);
         }
     }
-    const openclaw = options.openclawRoot && existsSync(resolve(options.openclawRoot, ".git"))
+    const openclawProbeable = options.openclawRoot
+        && !(openclawFromCache && options.dryRun)
+        && existsSync(resolve(options.openclawRoot, ".git"));
+    const openclaw = openclawProbeable
         ? localGitInfo(options.openclawRoot)
         : { status: "not required", head: "local package/cache mode" };
     const result = {
@@ -685,6 +716,10 @@ ${stepCommand(`checkout ${label}`)}
 git -C "$${repoVar}" checkout -q FETCH_HEAD
 git -C "$${repoVar}" reset --hard -q FETCH_HEAD`;
 }
+function localBuildDependencyInstallScript(repoVar, label) {
+    return `${stepCommand(`install ${label} dependencies`)}
+pnpm --dir "$${repoVar}" install --frozen-lockfile`;
+}
 function downloadCommand(lane, candidate, options) {
     const candidatePackage = candidate.kind === "package" ? candidate.label : "openclaw@beta";
     const npmCache = resolve(options.cacheRoot, "npm");
@@ -912,12 +947,14 @@ function kovaTargetScript(candidate, profile, options) {
             'printf \'CLAWDITOR_STEP:using Kova source ref %s\\n\' "$openclaw_ref" >&2',
             'git -C "$openclaw_target_repo" checkout -q FETCH_HEAD',
             'git -C "$openclaw_target_repo" reset --hard -q FETCH_HEAD',
+            localBuildDependencyInstallScript("openclaw_target_repo", "OpenClaw Kova target"),
             `kova_target="local-build:${openclawCache}"`,
             "printf 'CLAWDITOR_STEP:using Kova target %s\\n' \"$kova_target\" >&2",
         ].join("\n");
     }
     return [
         sourceCheckoutScript("openclaw_target_repo", openclawCache, "https://github.com/openclaw/openclaw.git", candidate.targetRef, "OpenClaw Kova target source"),
+        localBuildDependencyInstallScript("openclaw_target_repo", "OpenClaw Kova target"),
         `kova_target="local-build:${openclawCache}"`,
         "printf 'CLAWDITOR_STEP:using Kova target %s\\n' \"$kova_target\" >&2",
     ].join("\n");
