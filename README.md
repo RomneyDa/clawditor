@@ -25,30 +25,37 @@ npm link
 Then run it from any directory:
 
 ```sh
-clawlab beta --package openclaw@beta
-clawlab beta --package openclaw@2026.5.26-beta.1 --profile full
-clawlab beta --ref release/2026.5.26 --profile smoke
+clawlab test openclaw@beta
+clawlab test openclaw@2026.5.26-beta.1 --profile full
+clawlab test --ref release/2026.5.26 --profile smoke
 ```
 
-Normal use does not require OpenClaw or Crabpot checkouts. `clawlab` dispatches
-GitHub workflows through `gh`, installs candidate npm packages into temporary
-homes for smoke checks, and clones Crabpot into a temporary directory only when
-the downloadable Crabpot lane runs.
+Normal use is local-first and does not require OpenClaw or Crabpot checkouts.
+`clawlab` installs candidate npm packages into temporary homes for smoke checks
+and clones Crabpot into a temporary directory only when the downloadable Crabpot
+lane runs.
+
+GitHub Actions are opt-in:
+
+```sh
+clawlab test openclaw@beta --remote
+```
 
 Local checkouts are optional dev overrides for advanced local Crabbox/Crabpot
 lanes:
 
 ```sh
-clawlab beta --package openclaw@beta --suite crabbox --repo /path/to/openclaw
-clawlab beta --package openclaw@beta --suite crabpot --crabpot /path/to/crabpot
+clawlab test openclaw@beta --suite crabbox --repo /path/to/openclaw
+clawlab test openclaw@beta --suite crabpot --crabpot /path/to/crabpot
 ```
 
 ## Duplicate workflow control
 
-`clawlab` defaults to the umbrella `Full Release Validation` workflow for
-standard and full profiles. That keeps GitHub-side release work behind one
-workflow and uses that workflow's concurrency groups instead of dispatching
-separate package, plugin, release, and performance workflows for every user.
+When `--remote` is passed, `clawlab` uses the umbrella `Full Release Validation`
+workflow for standard and full profiles. That keeps GitHub-side release work
+behind one workflow and uses that workflow's concurrency groups instead of
+dispatching separate package, plugin, release, and performance workflows for
+every user.
 
 For separate workflow mode, `clawlab` checks active `workflow_dispatch` runs for
 the same workflow and reuses the active run instead of starting another one.
@@ -68,9 +75,9 @@ when you explicitly want a fresh run.
 Use `--suite` to limit work:
 
 ```sh
-clawlab beta --package openclaw@beta --suite github
-clawlab beta --package openclaw@beta --suite download
-clawlab beta --package openclaw@beta --dry-run
+clawlab test openclaw@beta --suite github
+clawlab test openclaw@beta --suite download
+clawlab test openclaw@beta --dry-run
 ```
 
 Outputs are written under `.artifacts/clawlab-*` with:

@@ -35,10 +35,13 @@ const profiles = {
   },
 };
 
+const defaultSuites = new Set(["download", "prompts"]);
+
 function usage() {
   return `Usage:
+  clawlab test openclaw@beta [options]
+  clawlab test --ref release/2026.5.26 [options]
   clawlab beta --package openclaw@beta [options]
-  clawlab beta --ref release/2026.5.26 [options]
 
 Options:
   --profile smoke|standard|full       Coverage profile (default: standard)
@@ -47,6 +50,7 @@ Options:
   --output <path>                     Artifact root (default: .artifacts)
   --suite <names>                     Comma list: github,download,crabbox,crabpot,prompts
   --github-mode umbrella|separate     Workflow strategy (default: umbrella)
+  --remote                            Add GitHub workflow dispatch/reuse
   --force-workflows                   Start workflows even when active runs exist
   --no-dedupe                         Disable active-run dedupe checks
   --watch                             Poll GitHub workflows after launching
@@ -72,10 +76,11 @@ function parseArgs(argv) {
       watch: false,
       dryRun: false,
       json: false,
-      suites: new Set(["github", "download", "prompts"]),
+      suites: new Set(defaultSuites),
     };
   }
   const [command, ...rest] = argv;
+  const positional = [];
   const options = {
     command,
     profile: "standard",
@@ -88,7 +93,7 @@ function parseArgs(argv) {
     watch: false,
     dryRun: false,
     json: false,
-    suites: new Set(["github", "download", "prompts"]),
+    suites: new Set(defaultSuites),
   };
 
   for (let i = 0; i < rest.length; i += 1) {
@@ -111,12 +116,20 @@ function parseArgs(argv) {
     else if (arg === "--output") options.outputRoot = resolve(next());
     else if (arg === "--suite") options.suites = new Set(next().split(",").map((item) => item.trim()).filter(Boolean));
     else if (arg === "--github-mode") options.githubMode = next();
+    else if (arg === "--remote" || arg === "--github") options.suites.add("github");
     else if (arg === "--force-workflows") options.forceWorkflows = true;
     else if (arg === "--no-dedupe") options.dedupe = false;
     else if (arg === "--watch") options.watch = true;
     else if (arg === "--dry-run") options.dryRun = true;
     else if (arg === "--json") options.json = true;
-    else throw new Error(`unknown option: ${arg}`);
+    else if (arg.startsWith("--")) throw new Error(`unknown option: ${arg}`);
+    else positional.push(arg);
+  }
+
+  if (command === "test" && positional.length > 0 && !options.packageSpec && !options.ref) {
+    options.packageSpec = positional[0];
+  } else if (positional.length > 0) {
+    throw new Error(`unexpected argument: ${positional[0]}`);
   }
 
   return options;
@@ -623,11 +636,14 @@ function verdictFor(summary) {
   const failedDownload = summary.download.some((run) => run.exitCode !== undefined && run.exitCode !== 0);
   const failedCrabbox = summary.crabbox.some((run) => run.exitCode !== undefined && run.exitCode !== 0);
   const failedCrabpot = summary.crabpot && !summary.crabpot.ok;
-  if (failedDownload || failedCrabbox || failedCrabpot) return "FAIL";
+  if (failedDownload || failedCrabbox || failedCrabpot) return "LOCAL_FAIL";
   const dry = [...summary.github, ...summary.download, ...summary.crabbox].some((run) => run.action === "dry-run");
   if (dry) return "DRY_RUN";
   const reused = summary.github.some((run) => run.action === "reuse-active");
-  return reused ? "INCOMPLETE_REUSED_ACTIVE_RUNS" : "STARTED";
+  if (summary.github.length > 0) {
+    return reused ? "REMOTE_REUSED_LOCAL_PASS" : "REMOTE_STARTED_LOCAL_PASS";
+  }
+  return "LOCAL_PASS";
 }
 
 function sleep(ms) {
@@ -675,7 +691,7 @@ async function main() {
     process.stdout.write(usage());
     process.exit(0);
   }
-  if (options.command !== "beta") {
+  if (!["test", "beta"].includes(options.command)) {
     process.stdout.write(usage());
     process.exit(1);
   }

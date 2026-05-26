@@ -7,19 +7,17 @@ describe("clawlab cli", () => {
     const output = execFileSync("node", ["bin/clawlab.mjs", "--help"], {
       encoding: "utf8",
     });
-    assert.match(output, /clawlab beta --package openclaw@beta/u);
+    assert.match(output, /clawlab test openclaw@beta/u);
   });
 
-  it("builds a dry-run github plan", () => {
+  it("builds a dry-run remote github plan", () => {
     const output = execFileSync("node", [
       "bin/clawlab.mjs",
-      "beta",
-      "--package",
+      "test",
       "openclaw@beta",
       "--profile",
       "smoke",
-      "--suite",
-      "github",
+      "--remote",
       "--dry-run",
       "--no-dedupe",
       "--json",
@@ -33,18 +31,16 @@ describe("clawlab cli", () => {
   it("builds a dry-run downloadable plan without a repo checkout", () => {
     const output = execFileSync("node", [
       "bin/clawlab.mjs",
-      "beta",
-      "--package",
+      "test",
       "openclaw@beta",
       "--profile",
       "smoke",
-      "--suite",
-      "download",
       "--dry-run",
       "--json",
     ], { encoding: "utf8" });
     const summary = JSON.parse(output);
     assert.equal(summary.preflight.openclawHead, "downloadable/github mode");
+    assert.equal(summary.github.length, 0);
     assert.ok(summary.download.some((run) => run.lane === "package-smoke"));
     assert.equal(summary.verdict, "DRY_RUN");
   });
