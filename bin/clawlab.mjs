@@ -2,6 +2,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { homedir, platform } from "node:os";
 import { dirname, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -47,6 +48,7 @@ Options:
   --repo <path>                       Optional local OpenClaw checkout for dev-only local-crabbox lanes
   --crabpot <path>                    Optional local Crabpot checkout for dev-only local-crabpot lanes
   --output <path>                     Artifact root (default: .artifacts)
+  --cache <path>                      Cache root (default: OS cache dir)
   --suite <names>                     Comma list: github,download,crabbox,crabpot,prompts
   --github-mode umbrella|separate     Workflow strategy (default: umbrella)
   --remote                            Add GitHub workflow dispatch/reuse
@@ -69,6 +71,7 @@ function parseArgs(argv) {
       openclawRoot: null,
       crabpotRoot: null,
       outputRoot: defaults.outputRoot,
+      cacheRoot: defaults.cacheRoot,
       githubMode: "umbrella",
       forceWorkflows: false,
       dedupe: true,
@@ -86,6 +89,7 @@ function parseArgs(argv) {
     openclawRoot: null,
     crabpotRoot: null,
     outputRoot: defaults.outputRoot,
+    cacheRoot: defaults.cacheRoot,
     githubMode: "umbrella",
     forceWorkflows: false,
     dedupe: true,
@@ -112,6 +116,7 @@ function parseArgs(argv) {
     else if (arg === "--repo") options.openclawRoot = resolve(next());
     else if (arg === "--crabpot") options.crabpotRoot = resolve(next());
     else if (arg === "--output") options.outputRoot = resolve(next());
+    else if (arg === "--cache") options.cacheRoot = resolve(next());
     else if (arg === "--suite") options.suites = new Set(next().split(",").map((item) => item.trim()).filter(Boolean));
     else if (arg === "--github-mode") options.githubMode = next();
     else if (arg === "--remote" || arg === "--github") options.suites.add("github");
@@ -141,7 +146,21 @@ function parseArgs(argv) {
 function defaultPaths() {
   return {
     outputRoot: resolve(process.cwd(), ".artifacts"),
+    cacheRoot: resolveCacheRoot(),
   };
+}
+
+function resolveCacheRoot() {
+  if (process.env.CLAWLAB_CACHE_DIR) {
+    return resolve(process.env.CLAWLAB_CACHE_DIR);
+  }
+  if (platform() === "darwin") {
+    return resolve(homedir(), "Library/Caches/clawlab");
+  }
+  if (platform() === "win32") {
+    return resolve(process.env.LOCALAPPDATA ?? resolve(homedir(), "AppData/Local"), "clawlab/cache");
+  }
+  return resolve(process.env.XDG_CACHE_HOME ?? resolve(homedir(), ".cache"), "clawlab");
 }
 
 function isOpenclawRepo(path) {
@@ -201,6 +220,7 @@ function readJsonCommand(command, args, cwd) {
 
 function preflight(options) {
   logStatus(options, "preflight: checking required tools");
+  mkdirSync(options.cacheRoot, { recursive: true });
   const missing = [];
   const required = ["node"];
   if (options.suites.has("github")) required.push("gh");
@@ -241,9 +261,11 @@ function preflight(options) {
     openclawHead: openclaw.head,
     openclawRoot: options.openclawRoot,
     crabpotRoot: options.crabpotRoot,
+    cacheRoot: options.cacheRoot,
     crabboxWrapper: options.openclawRoot ? resolve(options.openclawRoot, "scripts/crabbox-wrapper.mjs") : null,
   };
   logStatus(options, `preflight: ok (${required.join(", ")})`);
+  logStatus(options, `cache: ${options.cacheRoot}`);
   return result;
 }
 
@@ -543,10 +565,25 @@ const downloadLaneDescriptions = {
   "prompt-pack": "verify candidate package is runnable through npx and write prompt pack metadata",
 };
 
-function downloadableCommand(lane, candidate) {
+function downloadableCommand(lane, candidate, options) {
   const candidatePackage = candidate.kind === "package" ? candidate.label : "openclaw@beta";
+  const npmCache = resolve(options.cacheRoot, "npm");
+  const crabpotCache = resolve(options.cacheRoot, "repos/crabpot");
+  const npmCacheEnv = `export npm_config_cache=${quote(npmCache)}`;
+  const crabpotSync = `repo=${quote(crabpotCache)}
+if [ -d "$repo/.git" ]; then
+  git -C "$repo" fetch --depth 1 origin crab-beta
+else
+  mkdir -p "$(dirname "$repo")"
+  git clone --depth 1 --branch crab-beta https://github.com/openclaw/crabpot.git "$repo"
+fi
+git -C "$repo" checkout -q crab-beta
+git -C "$repo" reset --hard -q origin/crab-beta
+cd "$repo"`;
   const isolatedPackageInstall = [
     "tmp=$(mktemp -d)",
+    npmCacheEnv,
+    "export npm_config_prefix=\"$tmp/prefix\"",
     "export HOME=\"$tmp/home\"",
     "export OPENCLAW_HOME=\"$tmp/openclaw\"",
     "export OPENCLAW_STATE_DIR=\"$tmp/state\"",
@@ -570,9 +607,8 @@ function downloadableCommand(lane, candidate) {
       "test -s /tmp/clawlab-plugins-help.txt",
     ].join(" && "),
     crabpot: [
-      "tmp=$(mktemp -d)",
-      "git clone --depth 1 --branch crab-beta https://github.com/openclaw/crabpot.git \"$tmp/crabpot\"",
-      "cd \"$tmp/crabpot\"",
+      npmCacheEnv,
+      crabpotSync,
       "npm install",
       "npm run check",
       "npm run plugin-inspector:smoke",
@@ -588,12 +624,17 @@ function downloadableCommand(lane, candidate) {
 }
 
 function runDownloadLane(lane, candidate, options) {
-  const command = downloadableCommand(lane, candidate);
+  const command = downloadableCommand(lane, candidate, options);
   if (options.dryRun) {
     logStatus(options, `download: dry-run ${lane} - ${downloadLaneDescriptions[lane] ?? "run downloadable lane"}`);
     return { type: "download", lane, action: "dry-run", command: command.join(" ") };
   }
   logStatus(options, `download: running ${lane} - ${downloadLaneDescriptions[lane] ?? "run downloadable lane"}`);
+  if (lane === "crabpot") {
+    logStatus(options, `cache: crabpot repo ${resolve(options.cacheRoot, "repos/crabpot")}`);
+  } else {
+    logStatus(options, `cache: npm ${resolve(options.cacheRoot, "npm")}`);
+  }
   const startedAt = new Date().toISOString();
   const result = spawnSync(command[0], command.slice(1), {
     cwd: process.cwd(),

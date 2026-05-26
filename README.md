@@ -35,6 +35,28 @@ Normal use is local-first and does not require OpenClaw or Crabpot checkouts.
 and clones Crabpot into a temporary directory only when the downloadable Crabpot
 lane runs.
 
+Downloads are cached in the OS cache directory by default:
+
+```text
+macOS: ~/Library/Caches/clawlab
+Linux: ~/.cache/clawlab, or $XDG_CACHE_HOME/clawlab
+Windows: %LOCALAPPDATA%\\clawlab\\cache
+```
+
+The cache contains a shared npm cache and a reusable Crabpot checkout:
+
+```text
+clawlab/
+  npm/
+  repos/crabpot/
+```
+
+Override it with:
+
+```sh
+clawlab test openclaw@beta --cache /path/to/cache
+```
+
 GitHub Actions are opt-in:
 
 ```sh
