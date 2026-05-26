@@ -35,6 +35,7 @@ Requirements:
 - Node.js
 - npm and npx
 - git
+- curl for the default Kova lane, which installs cached OCM tooling
 - git-lfs for the default `standard` and `full` profiles, because Crabpot syncs
   plugin fixtures that include Git LFS-backed submodules
 
@@ -42,6 +43,11 @@ Normal use is local-first and does not require OpenClaw or Crabpot checkouts.
 `clawlab` installs candidate npm packages into temporary homes for smoke checks
 and uses reusable cached source checkouts only when the downloadable Crabpot lane
 runs.
+
+The default path also runs Kova locally against the candidate package using the
+mock-provider performance lane. For package candidates such as `openclaw@beta`,
+Clawlab resolves the published version and asks Kova to test `npm:<version>`.
+Kova and OCM are cached under the Clawlab cache root.
 
 For package candidates such as `openclaw@beta`, the Crabpot lane resolves the
 published package version and checks out the matching OpenClaw source tag
@@ -62,14 +68,16 @@ Windows: %LOCALAPPDATA%\\clawlab\\cache
 ```
 
 The cache contains a shared npm cache plus reusable Crabpot and OpenClaw source
-checkouts:
+checkouts, Kova, and OCM tooling:
 
 ```text
 clawlab/
   npm/
   repos/
     crabpot/
+    kova/
     openclaw/
+  tools/
 ```
 
 Override it with:
@@ -110,7 +118,8 @@ when you explicitly want a fresh run.
 
 - `smoke`: fastest meaningful local package install, version, and doctor check.
 - `standard`: default. Runs package install/doctor, CLI bootstrap help checks,
-  and Crabpot/plugin-inspector compatibility from downloads.
+  Kova mock-provider performance, and Crabpot/plugin-inspector compatibility
+  from downloads.
 - `full`: standard local checks plus prompt-pack smoke. With `--remote`, it
   asks GitHub for the broader full release profile.
 
@@ -121,6 +130,7 @@ Use `--suite` to limit work:
 ```sh
 clawlab test openclaw@beta --suite github
 clawlab test openclaw@beta --suite download
+clawlab test openclaw@beta --suite kova
 clawlab test openclaw@beta --dry-run
 ```
 

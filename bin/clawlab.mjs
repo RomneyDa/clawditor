@@ -1,13 +1,16 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { dirname, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const githubRepo = "openclaw/openclaw";
+const kovaRepo = "openclaw/Kova";
+const kovaRef = "b63b6f9e20efb23641df00487e982230d81a90ac";
+const ocmVersion = "v0.2.15";
 
 const profiles = {
   smoke: {
@@ -16,6 +19,7 @@ const profiles = {
     packageAcceptanceProfile: "smoke",
     kovaProfile: "smoke",
     kovaRepeat: "1",
+    kovaFilters: ["scenario:fresh-install"],
     downloadLanes: ["package-smoke"],
   },
   standard: {
@@ -24,6 +28,13 @@ const profiles = {
     packageAcceptanceProfile: "package",
     kovaProfile: "diagnostic",
     kovaRepeat: "3",
+    kovaFilters: [
+      "scenario:fresh-install",
+      "scenario:gateway-performance",
+      "scenario:bundled-plugin-startup",
+      "scenario:bundled-runtime-deps",
+      "scenario:agent-cold-warm-message",
+    ],
     downloadLanes: ["package-smoke", "cli-smoke", "crabpot"],
   },
   full: {
@@ -32,11 +43,18 @@ const profiles = {
     packageAcceptanceProfile: "full",
     kovaProfile: "release",
     kovaRepeat: "3",
+    kovaFilters: [
+      "scenario:fresh-install",
+      "scenario:gateway-performance",
+      "scenario:bundled-plugin-startup",
+      "scenario:bundled-runtime-deps",
+      "scenario:agent-cold-warm-message",
+    ],
     downloadLanes: ["package-smoke", "cli-smoke", "crabpot", "prompt-pack"],
   },
 };
 
-const defaultSuites = new Set(["download", "prompts"]);
+const defaultSuites = new Set(["download", "kova", "prompts"]);
 
 function usage() {
   return `Usage:
@@ -49,7 +67,7 @@ Options:
   --crabpot <path>                    Optional local Crabpot checkout for dev-only local-crabpot lanes
   --output <path>                     Artifact root (default: .artifacts)
   --cache <path>                      Cache root (default: OS cache dir)
-  --suite <names>                     Comma list: github,download,crabbox,crabpot,prompts
+  --suite <names>                     Comma list: github,download,kova,crabbox,crabpot,prompts
   --github-mode umbrella|separate     Workflow strategy (default: umbrella)
   --remote                            Add GitHub workflow dispatch/reuse
   --force-workflows                   Start workflows even when active runs exist
@@ -224,8 +242,12 @@ function streamProcessOutput(options, prefix, line) {
 
 function isHighlightLine(line) {
   return /^OpenClaw \S+/u.test(line) ||
+    /^Kova \S+/u.test(line) ||
+    /^Verdict:/u.test(line) ||
     /^Status: /u.test(line) ||
+    /^(PASS|FAIL|WARN|PARTIAL)\b/u.test(line) ||
     /^(Breakages|Issues|Artifacts): /u.test(line) ||
+    /^(Scenarios|Runs|Passed|Failed|Warnings|Regressions): /u.test(line) ||
     /^crabpot report check:/u.test(line) ||
     /^report targets:/u.test(line) ||
     /^contract capture:/u.test(line) ||
@@ -281,9 +303,17 @@ function preflight(options, profile) {
   const missing = [];
   const required = ["node"];
   if (options.suites.has("github")) required.push("gh");
-  if (options.suites.has("download")) required.push("npm", "npx");
-  if (options.suites.has("download") || options.suites.has("crabbox") || options.suites.has("crabpot")) {
+  if (options.suites.has("download") || options.suites.has("kova")) required.push("npm", "npx");
+  if (
+    options.suites.has("download") ||
+    options.suites.has("kova") ||
+    options.suites.has("crabbox") ||
+    options.suites.has("crabpot")
+  ) {
     required.push("git");
+  }
+  if (!options.dryRun && options.suites.has("kova")) {
+    required.push("curl");
   }
   if (!options.dryRun && options.suites.has("download") && profile.downloadLanes.includes("crabpot")) {
     required.push("git-lfs");
@@ -627,6 +657,22 @@ const downloadLaneDescriptions = {
   "prompt-pack": "verify candidate package is runnable through npx and write prompt pack metadata",
 };
 
+function sourceCheckoutScript(repoVar, cachePath, repoUrl, ref, label) {
+  return `${repoVar}=${quote(cachePath)}
+if [ -d "$${repoVar}/.git" ]; then
+  ${stepCommand(`fetch cached ${label}`)}
+  git -C "$${repoVar}" fetch --depth 1 origin ${quote(ref)}
+else
+  ${stepCommand(`clone ${label}`)}
+  mkdir -p "$(dirname "$${repoVar}")"
+  git clone --filter=blob:none ${quote(repoUrl)} "$${repoVar}"
+  git -C "$${repoVar}" fetch --depth 1 origin ${quote(ref)}
+fi
+${stepCommand(`checkout ${label}`)}
+git -C "$${repoVar}" checkout -q FETCH_HEAD
+git -C "$${repoVar}" reset --hard -q FETCH_HEAD`;
+}
+
 function downloadableCommand(lane, candidate, options) {
   const candidatePackage = candidate.kind === "package" ? candidate.label : "openclaw@beta";
   const npmCache = resolve(options.cacheRoot, "npm");
@@ -832,6 +878,198 @@ async function runDownloadLane(lane, candidate, options) {
   return run;
 }
 
+function kovaTargetScript(candidate, options) {
+  const openclawCache = resolve(options.cacheRoot, "repos/openclaw-kova-target");
+  if (candidate.kind === "package") {
+    return [
+      stepCommand(`resolve Kova npm target for ${candidate.label}`),
+      `openclaw_version=$(npm view ${quote(candidate.label)} version)`,
+      "kova_target=\"npm:$openclaw_version\"",
+      "printf 'CLAWLAB_STEP:using Kova target %s\\n' \"$kova_target\" >&2",
+    ].join("\n");
+  }
+  return [
+    sourceCheckoutScript(
+      "openclaw_target_repo",
+      openclawCache,
+      "https://github.com/openclaw/openclaw.git",
+      candidate.targetRef,
+      "OpenClaw Kova target source",
+    ),
+    `kova_target="local-build:${openclawCache}"`,
+    "printf 'CLAWLAB_STEP:using Kova target %s\\n' \"$kova_target\" >&2",
+  ].join("\n");
+}
+
+function kovaCommand(candidate, profile, options, outputDir) {
+  const kovaCache = resolve(options.cacheRoot, "repos/kova");
+  const toolPrefix = resolve(options.cacheRoot, "tools");
+  const reportDir = resolve(outputDir, "kova/reports/mock-provider");
+  const homeDir = resolve(outputDir, "kova/home/mock-provider");
+  const filters = profile.kovaFilters.flatMap((filter) => ["--include", filter]);
+  const command = [
+    "set -euo pipefail",
+    stepCommand("sync Kova"),
+    sourceCheckoutScript("kova_repo", kovaCache, `https://github.com/${kovaRepo}.git`, kovaRef, "Kova"),
+    stepCommand(`install OCM ${ocmVersion}`),
+    `mkdir -p ${quote(toolPrefix)} ${quote(reportDir)} ${quote(homeDir)}`,
+    `if [ ! -x ${quote(resolve(toolPrefix, "bin/ocm"))} ]; then curl -fsSL https://raw.githubusercontent.com/shakkernerd/ocm/main/install.sh | bash -s -- --version ${quote(ocmVersion)} --prefix ${quote(toolPrefix)} --force; fi`,
+    `export PATH=${quote(resolve(toolPrefix, "bin"))}:$PATH`,
+    `export KOVA_HOME=${quote(homeDir)}`,
+    kovaTargetScript(candidate, options),
+    stepCommand("kova version"),
+    "node \"$kova_repo/bin/kova.mjs\" version --plain --no-color",
+    stepCommand(`kova matrix plan ${profile.kovaProfile}`),
+    [
+      "node \"$kova_repo/bin/kova.mjs\" matrix plan",
+      "--profile",
+      quote(profile.kovaProfile),
+      "--target",
+      "\"$kova_target\"",
+      ...filters.map(quote),
+      "--json >/tmp/clawlab-kova-plan.json",
+    ].join(" "),
+    stepCommand(`kova matrix run ${profile.kovaProfile}`),
+    [
+      "node \"$kova_repo/bin/kova.mjs\" matrix run",
+      "--profile",
+      quote(profile.kovaProfile),
+      "--target",
+      "\"$kova_target\"",
+      "--auth mock",
+      "--parallel 1",
+      "--repeat",
+      quote(profile.kovaRepeat),
+      "--report-dir",
+      quote(reportDir),
+      "--execute",
+      "--plain",
+      "--no-color",
+      ...filters.map(quote),
+    ].join(" "),
+  ].join("\n");
+  return ["bash", "--noprofile", "--norc", "-c", command];
+}
+
+function latestJsonFile(dir) {
+  try {
+    return readdirSync(dir)
+      .filter((name) => name.endsWith(".json"))
+      .map((name) => resolve(dir, name))
+      .sort()
+      .at(-1) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function readJsonFile(file) {
+  if (!file) return null;
+  try {
+    return JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function kovaReportHighlights(report) {
+  if (!report || typeof report !== "object") return [];
+  const highlights = [];
+  const verdict = report.gate?.verdict ?? report.summary?.verdict ?? report.verdict;
+  if (verdict) highlights.push(`verdict: ${verdict}`);
+  const statuses = report.summary?.statuses;
+  if (statuses && typeof statuses === "object") {
+    highlights.push(
+      `statuses: ${Object.entries(statuses).map(([status, count]) => `${status}=${count}`).join(", ")}`,
+    );
+  }
+  const failingRecords = Array.isArray(report.records)
+    ? report.records.filter((record) => record?.status && !["PASS", "SKIP"].includes(record.status))
+    : [];
+  for (const record of failingRecords.slice(0, 5)) {
+    const bits = [
+      record.status,
+      record.scenario,
+      record.title,
+      record.providerEvidence?.error,
+      record.measurements?.readinessClassificationReason,
+    ].filter(Boolean);
+    highlights.push(`record: ${bits.join(" - ")}`);
+  }
+  const repeat = report.performance?.repeat;
+  if (repeat !== undefined) highlights.push(`repeat: ${repeat}`);
+  const groups = Array.isArray(report.performance?.groups) ? report.performance.groups : [];
+  for (const group of groups.slice(0, 5)) {
+    const label = group.label ?? group.id ?? group.name;
+    const p50 = group.durationMs?.p50 ?? group.p50Ms ?? group.p50;
+    const p95 = group.durationMs?.p95 ?? group.p95Ms ?? group.p95;
+    if (label && (p50 !== undefined || p95 !== undefined)) {
+      highlights.push(`${label}: p50=${p50 ?? "?"}ms p95=${p95 ?? "?"}ms`);
+    }
+  }
+  return highlights;
+}
+
+function kovaReportOk(report) {
+  if (!report || typeof report !== "object") return false;
+  const gateVerdict = report.gate?.verdict ?? report.summary?.verdict ?? report.verdict;
+  if (["FAIL", "BLOCK", "BLOCKED"].includes(String(gateVerdict ?? "").toUpperCase())) {
+    return false;
+  }
+  const statuses = report.summary?.statuses;
+  if (!statuses || typeof statuses !== "object") return true;
+  return Object.entries(statuses)
+    .filter(([status]) => !["PASS", "SKIP"].includes(status))
+    .every(([, count]) => Number(count) === 0);
+}
+
+async function runKova(candidate, profile, options, outputDir) {
+  if (!options.suites.has("kova")) return null;
+  const command = kovaCommand(candidate, profile, options, outputDir);
+  const reportDir = resolve(outputDir, "kova/reports/mock-provider");
+  if (options.dryRun) {
+    logStatus(options, `kova: dry-run ${profile.kovaProfile}`);
+    return {
+      type: "kova",
+      lane: "mock-provider",
+      action: "dry-run",
+      profile: profile.kovaProfile,
+      repeat: profile.kovaRepeat,
+      filters: profile.kovaFilters,
+      command: command.join(" "),
+    };
+  }
+  logStatus(options, `kova: running mock-provider profile=${profile.kovaProfile} repeat=${profile.kovaRepeat}`);
+  logStatus(options, `cache: kova repo ${resolve(options.cacheRoot, "repos/kova")}`);
+  logStatus(options, `cache: ocm tools ${resolve(options.cacheRoot, "tools")}`);
+  const startedAt = new Date().toISOString();
+  const result = await runLiveProcess(command, "kova: mock-provider", options);
+  const reportJson = latestJsonFile(reportDir);
+  const report = readJsonFile(reportJson);
+  const reportOk = kovaReportOk(report);
+  const run = {
+    type: "kova",
+    lane: "mock-provider",
+    action: "ran",
+    profile: profile.kovaProfile,
+    repeat: profile.kovaRepeat,
+    filters: profile.kovaFilters,
+    exitCode: result.exitCode,
+    startedAt,
+    ok: result.exitCode === 0 && reportOk,
+    reportOk,
+    reportJson: reportJson ? relative(outputDir, reportJson) : null,
+    reportHighlights: kovaReportHighlights(report),
+    highlights: result.highlights,
+    outputTail: result.outputTail,
+  };
+  logStatus(options, `kova: mock-provider ${run.ok ? "passed" : `failed (process exit=${run.exitCode}, report=${reportOk ? "pass" : "fail"})`}`);
+  if (!run.ok && run.outputTail) {
+    logStatus(options, `kova: mock-provider: output tail:\n${run.outputTail}`);
+  }
+  return run;
+}
+
 async function runLocalCrabpot(candidate, options) {
   if (!options.suites.has("crabpot")) return null;
   const commands = [
@@ -940,6 +1178,32 @@ function crabboxSummaryLines(run) {
   return [...lines, ""];
 }
 
+function kovaSummaryLines(run) {
+  if (!run) {
+    return ["- skipped: Kova suite was not selected.", ""];
+  }
+  const lines = [
+    `### ${run.lane}`,
+    "",
+    `- status: ${statusText(run)}`,
+    `- profile: ${run.profile}`,
+    `- repeat: ${run.repeat}`,
+    `- started: ${run.startedAt ?? "not started"}`,
+  ];
+  if (run.reportOk !== undefined) lines.push(`- report verdict: ${run.reportOk ? "pass" : "fail"}`);
+  if (run.reportJson) lines.push(`- report: ${run.reportJson}`);
+  if (run.filters?.length) lines.push(`- filters: ${run.filters.join(", ")}`);
+  if (run.command) lines.push(`- command: \`${run.command}\``);
+  const highlights = [...(run.reportHighlights ?? []), ...(run.highlights ?? [])];
+  if (highlights.length) {
+    lines.push("", "Highlights:", ...highlights.map((line) => `- ${line}`));
+  }
+  if (run.outputTail) {
+    lines.push("", "Output tail:", ...fencedBlock(run.outputTail));
+  }
+  return [...lines, ""];
+}
+
 function localCrabpotSummaryLines(crabpot) {
   if (!crabpot) {
     return [
@@ -983,6 +1247,9 @@ function writeSummary(outputDir, summary) {
       ? summary.download.flatMap((run) => downloadSummaryLines(run))
       : ["- skipped: downloadable lanes were not selected.", ""]),
     "",
+    "## Kova",
+    ...kovaSummaryLines(summary.kova),
+    "",
     "## Crabbox",
     ...(summary.crabbox.length > 0
       ? summary.crabbox.flatMap((run) => crabboxSummaryLines(run))
@@ -999,6 +1266,7 @@ function writeSummary(outputDir, summary) {
     "## Files",
     "- `manifest.json`: full structured result data",
     "- `summary.md`: this review summary",
+    ...(summary.kova?.reportJson ? [`- \`${summary.kova.reportJson}\`: Kova JSON report`] : []),
     ...(summary.prompts.length > 0 ? ["- `prompt-pack.json`: prompt preset manifest"] : []),
     "",
   ];
@@ -1007,10 +1275,13 @@ function writeSummary(outputDir, summary) {
 
 function verdictFor(summary) {
   const failedDownload = summary.download.some((run) => run.exitCode !== undefined && run.exitCode !== 0);
+  const failedKova = summary.kova && summary.kova.ok === false;
   const failedCrabbox = summary.crabbox.some((run) => run.exitCode !== undefined && run.exitCode !== 0);
   const failedCrabpot = summary.crabpot && !summary.crabpot.ok;
-  if (failedDownload || failedCrabbox || failedCrabpot) return "LOCAL_FAIL";
-  const dry = [...summary.github, ...summary.download, ...summary.crabbox].some((run) => run.action === "dry-run");
+  if (failedDownload || failedKova || failedCrabbox || failedCrabpot) return "LOCAL_FAIL";
+  const dry = [...summary.github, ...summary.download, summary.kova, ...summary.crabbox]
+    .filter(Boolean)
+    .some((run) => run.action === "dry-run");
   if (dry) return "DRY_RUN";
   const reused = summary.github.some((run) => run.action === "reuse-active");
   if (summary.github.length > 0) {
@@ -1105,6 +1376,8 @@ async function main() {
     }
   }
 
+  const kova = await runKova(candidate, profile, options, outputDir);
+
   const crabbox = [];
   if (options.suites.has("crabbox")) {
     for (const lane of profile.downloadLanes) {
@@ -1126,6 +1399,7 @@ async function main() {
     preflight: preflightData,
     github,
     download,
+    kova,
     crabbox,
     crabpot,
     prompts: prompts.map((prompt) => ({
