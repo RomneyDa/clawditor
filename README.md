@@ -22,6 +22,14 @@ For local development:
 npm link
 ```
 
+Source lives in `src/` as TypeScript. The global CLI runs the compiled
+`dist/clawlab.js` build:
+
+```sh
+npm run build
+npm test
+```
+
 Then run it from any directory:
 
 ```sh
@@ -43,10 +51,12 @@ Normal use is local-first and does not require OpenClaw or Crabpot checkouts.
 `clawlab` installs candidate npm packages into temporary homes for smoke checks
 and uses reusable cached source checkouts only when the Crabpot lane runs.
 
-The default path also runs Kova locally against the candidate package using the
-mock-provider performance lane. For package candidates such as `openclaw@beta`,
-Clawlab resolves the published version and asks Kova to test `npm:<version>`.
-Kova and OCM are cached under the Clawlab cache root.
+The default path also runs Kova locally through the mock-provider performance
+lane. For package candidates such as `openclaw@beta`, Clawlab resolves the
+published version, checks out the matching OpenClaw source tag, and asks Kova's
+diagnostic profile to test that checkout as `local-build:<path>`. The lighter
+smoke profile can use Kova's `npm:<version>` target directly. Kova and OCM are
+cached under the Clawlab cache root.
 
 For package candidates such as `openclaw@beta`, the Crabpot lane resolves the
 published package version and checks out the matching OpenClaw source tag

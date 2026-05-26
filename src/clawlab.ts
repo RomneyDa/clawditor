@@ -6,6 +6,12 @@ import { homedir, platform } from "node:os";
 import { dirname, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
+type JsonObject = Record<string, any>;
+type CliOptions = JsonObject;
+type Candidate = JsonObject;
+type Profile = JsonObject;
+type RunResult = JsonObject;
+
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const githubRepo = "openclaw/openclaw";
 const kovaRepo = "openclaw/Kova";
@@ -79,7 +85,7 @@ Options:
 `;
 }
 
-function parseArgs(argv) {
+function parseArgs(argv: string[]): CliOptions {
   const defaults = defaultPaths();
   if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h") {
     return {
@@ -101,7 +107,7 @@ function parseArgs(argv) {
   }
   const [command, ...rest] = argv;
   const positional = [];
-  const options = {
+  const options: CliOptions = {
     command,
     profile: "standard",
     openclawRoot: null,
@@ -181,19 +187,19 @@ function resolveCacheRoot() {
   return resolve(process.env.XDG_CACHE_HOME ?? resolve(homedir(), ".cache"), "clawlab");
 }
 
-function isOpenclawRepo(path) {
+function isOpenclawRepo(path: string): boolean {
   return existsSync(resolve(path, "package.json")) &&
     existsSync(resolve(path, "scripts/crabbox-wrapper.mjs")) &&
     existsSync(resolve(path, ".github/workflows/full-release-validation.yml"));
 }
 
-function isCrabpotRepo(path) {
+function isCrabpotRepo(path: string): boolean {
   return existsSync(resolve(path, "package.json")) &&
     existsSync(resolve(path, "crabpot.config.json")) &&
     existsSync(resolve(path, "scripts/run-static-suite.mjs"));
 }
 
-function runSync(command, args, opts = {}) {
+function runSync(command: string, args: string[], opts: JsonObject = {}) {
   const result = spawnSync(command, args, {
     cwd: opts.cwd,
     encoding: "utf8",
@@ -208,39 +214,39 @@ function runSync(command, args, opts = {}) {
   return result;
 }
 
-function commandExists(command) {
+function commandExists(command: string): boolean {
   return spawnSync("sh", ["-lc", `command -v ${quote(command)} >/dev/null 2>&1`]).status === 0;
 }
 
-function quote(value) {
+function quote(value: unknown): string {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
 }
 
-function hash(value) {
+function hash(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 16);
 }
 
-function logStatus(options, message) {
+function logStatus(options: CliOptions, message: string): void {
   if (!options.json) {
     process.stdout.write(`${message}\n`);
   }
 }
 
-function stepCommand(label) {
+function stepCommand(label: string): string {
   return `printf 'CLAWLAB_STEP:%s\\n' ${quote(label)} >&2`;
 }
 
-function elapsedSeconds(startedMs) {
+function elapsedSeconds(startedMs: number): number {
   return Math.max(0, Math.round((Date.now() - startedMs) / 1000));
 }
 
-function streamProcessOutput(options, prefix, line) {
+function streamProcessOutput(options: CliOptions, prefix: string, line: string): void {
   if (!options.json) {
     process.stdout.write(`${prefix}: > ${line}\n`);
   }
 }
 
-function isHighlightLine(line) {
+function isHighlightLine(line: string): boolean {
   return /^OpenClaw \S+/u.test(line) ||
     /^Kova \S+/u.test(line) ||
     /^Verdict:/u.test(line) ||
@@ -266,7 +272,7 @@ function isHighlightLine(line) {
     /Doctor complete/u.test(line);
 }
 
-function rememberHighlight(highlights, line) {
+function rememberHighlight(highlights: string[], line: string): void {
   const trimmed = line.trim();
   if (!trimmed || !isHighlightLine(trimmed) || highlights.includes(trimmed)) {
     return;
@@ -277,7 +283,7 @@ function rememberHighlight(highlights, line) {
   }
 }
 
-function missingCommandError(missing) {
+function missingCommandError(missing: string[]): string {
   const lines = [`missing required command(s): ${missing.join(", ")}`];
   if (missing.includes("git-lfs")) {
     lines.push("git-lfs is required by the default Crabpot lane because some plugin fixtures use Git LFS-backed submodules.");
@@ -287,7 +293,7 @@ function missingCommandError(missing) {
   return lines.join("\n");
 }
 
-function readJsonCommand(command, args, cwd) {
+function readJsonCommand(command: string, args: string[], cwd?: string): any {
   const result = runSync(command, args, { cwd, capture: true, allowFailure: true });
   if (result.status !== 0) return null;
   try {
@@ -297,7 +303,7 @@ function readJsonCommand(command, args, cwd) {
   }
 }
 
-function preflight(options, profile) {
+function preflight(options: CliOptions, profile: Profile): JsonObject {
   logStatus(options, "preflight: checking required tools");
   mkdirSync(options.cacheRoot, { recursive: true });
   const missing = [];
@@ -359,7 +365,7 @@ function preflight(options, profile) {
   return result;
 }
 
-function localGitInfo(cwd) {
+function localGitInfo(cwd: string): JsonObject {
   const status = runSync("git", ["status", "-sb"], {
     cwd,
     capture: true,
@@ -376,7 +382,7 @@ function localGitInfo(cwd) {
   };
 }
 
-function candidateFromOptions(options) {
+function candidateFromOptions(options: CliOptions): Candidate {
   if (options.packageSpec) {
     return {
       kind: "package",
@@ -396,9 +402,9 @@ function candidateFromOptions(options) {
   throw new Error("missing candidate: pass a package spec such as openclaw@beta or --ref <branch/tag/sha>");
 }
 
-function workflowInputs(workflow, candidate, profile) {
+function workflowInputs(workflow: string, candidate: Candidate, profile: Profile): Record<string, string> {
   if (workflow === "full-release-validation.yml") {
-    const inputs = {
+    const inputs: Record<string, string> = {
       ref: candidate.targetRef,
       provider: "openai",
       mode: "both",
@@ -417,7 +423,7 @@ function workflowInputs(workflow, candidate, profile) {
   }
 
   if (workflow === "package-acceptance.yml") {
-    const inputs = {
+    const inputs: Record<string, string> = {
       workflow_ref: "main",
       source: candidate.kind === "package" ? "npm" : "ref",
       package_ref: candidate.kind === "ref" ? candidate.targetRef : "main",
@@ -448,7 +454,7 @@ function workflowInputs(workflow, candidate, profile) {
   throw new Error(`unknown workflow: ${workflow}`);
 }
 
-function workflowPlan(options, candidate, profile) {
+function workflowPlan(options: CliOptions, candidate: Candidate, profile: Profile): string[] {
   if (!options.suites.has("github")) return [];
   if (options.githubMode === "umbrella" && profile.runFullRelease) {
     return ["full-release-validation.yml"];
@@ -456,7 +462,7 @@ function workflowPlan(options, candidate, profile) {
   return ["package-acceptance.yml", "plugin-prerelease.yml", "openclaw-performance.yml"];
 }
 
-function activeWorkflowRun(workflow, options) {
+function activeWorkflowRun(workflow: string, options: CliOptions): any {
   if (!options.dedupe || options.forceWorkflows) return null;
   const fields = "databaseId,displayTitle,event,headBranch,status,conclusion,createdAt,url,workflowName";
   const active = [];
@@ -480,7 +486,7 @@ function activeWorkflowRun(workflow, options) {
   return active.find((run) => run.event === "workflow_dispatch") ?? null;
 }
 
-function launchWorkflow(workflow, candidate, profile, options) {
+function launchWorkflow(workflow: string, candidate: Candidate, profile: Profile, options: CliOptions): RunResult {
   logStatus(options, `github: checking ${workflow}`);
   const existing = activeWorkflowRun(workflow, options);
   if (existing) {
@@ -537,7 +543,7 @@ function launchWorkflow(workflow, candidate, profile, options) {
   return result;
 }
 
-function crabboxCommand(lane, candidate, options) {
+function crabboxCommand(lane: string, candidate: Candidate, options: CliOptions): string[] {
   const wrapper = resolve(options.openclawRoot, "scripts/crabbox-wrapper.mjs");
   const base = [
     "node",
@@ -575,7 +581,7 @@ function crabboxCommand(lane, candidate, options) {
     "openclaw doctor --non-interactive",
   ].join(" && ");
 
-  const commands = {
+  const commands: Record<string, string> = {
     "package-smoke": candidate.kind === "package"
       ? `echo CRABBOX_PHASE:doctor && ${packageDoctor}`
       : "echo CRABBOX_PHASE:doctor && corepack pnpm release:check",
@@ -617,7 +623,7 @@ function crabboxCommand(lane, candidate, options) {
   return [...base, "bash", "--noprofile", "--norc", "-c", commands[lane]];
 }
 
-async function runCrabboxLane(lane, candidate, options) {
+async function runCrabboxLane(lane: string, candidate: Candidate, options: CliOptions): Promise<RunResult> {
   const command = crabboxCommand(lane, candidate, options);
   if (options.dryRun) {
     logStatus(options, `crabbox: dry-run ${lane}`);
@@ -625,7 +631,7 @@ async function runCrabboxLane(lane, candidate, options) {
   }
   logStatus(options, `crabbox: running ${lane}`);
   const startedAt = new Date().toISOString();
-  const result = await runLiveProcess(command, `crabbox: ${lane}`, options, {
+  const result: RunResult = await runLiveProcess(command, `crabbox: ${lane}`, options, {
     cwd: options.openclawRoot,
   });
   const output = result.output;
@@ -657,7 +663,7 @@ const downloadLaneDescriptions = {
   "prompt-pack": "verify candidate package is runnable through npx and write prompt pack metadata",
 };
 
-function sourceCheckoutScript(repoVar, cachePath, repoUrl, ref, label) {
+function sourceCheckoutScript(repoVar: string, cachePath: string, repoUrl: string, ref: string, label: string): string {
   return `${repoVar}=${quote(cachePath)}
 if [ -d "$${repoVar}/.git" ]; then
   ${stepCommand(`fetch cached ${label}`)}
@@ -673,7 +679,7 @@ git -C "$${repoVar}" checkout -q FETCH_HEAD
 git -C "$${repoVar}" reset --hard -q FETCH_HEAD`;
 }
 
-function downloadCommand(lane, candidate, options) {
+function downloadCommand(lane: string, candidate: Candidate, options: CliOptions): string[] {
   const candidatePackage = candidate.kind === "package" ? candidate.label : "openclaw@beta";
   const npmCache = resolve(options.cacheRoot, "npm");
   const crabpotCache = resolve(options.cacheRoot, "repos/crabpot");
@@ -731,7 +737,7 @@ cd "$repo"`;
     stepCommand(`npm install -g ${candidatePackage}`),
     `npm install -g ${quote(candidatePackage)}`,
   ];
-  const commands = {
+  const commands: Record<string, string> = {
     "package-smoke": [
       ...isolatedPackageInstall,
       stepCommand("openclaw --version"),
@@ -780,20 +786,20 @@ cd "$repo"`;
   return ["bash", "--noprofile", "--norc", "-c", commands[lane]];
 }
 
-function runLiveProcess(command, prefix, options, opts = {}) {
+function runLiveProcess(command: string[], prefix: string, options: CliOptions, opts: JsonObject = {}): Promise<RunResult> {
   return new Promise((resolveRun) => {
     const startedMs = Date.now();
     const child = spawn(command[0], command.slice(1), {
       cwd: opts.cwd ?? process.cwd(),
       stdio: ["ignore", "pipe", "pipe"],
     });
-    const lines = [];
-    const highlights = [];
+    const lines: string[] = [];
+    const highlights: string[] = [];
     let currentStep = "starting";
     let pending = "";
-    let spawnError = null;
+    let spawnError: Error | null = null;
 
-    const rememberLine = (line) => {
+    const rememberLine = (line: string) => {
       if (line.startsWith("CLAWLAB_STEP:")) {
         currentStep = line.slice("CLAWLAB_STEP:".length).trim();
         if (currentStep.startsWith("WARN ")) {
@@ -811,9 +817,9 @@ function runLiveProcess(command, prefix, options, opts = {}) {
       streamProcessOutput(options, prefix, line);
     };
 
-    const rememberChunk = (chunk) => {
+    const rememberChunk = (chunk: Buffer) => {
       pending += chunk.toString("utf8");
-      const chunkLines = pending.split(/\r?\n/u);
+      const chunkLines = pending.split(/\r?\n|\r(?!\n)/u);
       pending = chunkLines.pop() ?? "";
       for (const line of chunkLines) {
         rememberLine(line);
@@ -846,7 +852,7 @@ function runLiveProcess(command, prefix, options, opts = {}) {
   });
 }
 
-async function runDownloadLane(lane, candidate, options) {
+async function runDownloadLane(lane: string, candidate: Candidate, options: CliOptions): Promise<RunResult> {
   const command = downloadCommand(lane, candidate, options);
   if (options.dryRun) {
     logStatus(options, `download: dry-run ${lane} - ${downloadLaneDescriptions[lane] ?? "run package/cache lane"}`);
@@ -860,7 +866,7 @@ async function runDownloadLane(lane, candidate, options) {
     logStatus(options, `cache: npm ${resolve(options.cacheRoot, "npm")}`);
   }
   const startedAt = new Date().toISOString();
-  const result = await runLiveProcess(command, `download: ${lane}`, options);
+  const result: RunResult = await runLiveProcess(command, `download: ${lane}`, options);
   const run = {
     type: "download",
     lane,
@@ -878,13 +884,35 @@ async function runDownloadLane(lane, candidate, options) {
   return run;
 }
 
-function kovaTargetScript(candidate, options) {
+function kovaTargetScript(candidate: Candidate, profile: Profile, options: CliOptions): string {
   const openclawCache = resolve(options.cacheRoot, "repos/openclaw-kova-target");
-  if (candidate.kind === "package") {
+  if (candidate.kind === "package" && profile.kovaProfile === "smoke") {
     return [
       stepCommand(`resolve Kova npm target for ${candidate.label}`),
       `openclaw_version=$(npm view ${quote(candidate.label)} version)`,
       "kova_target=\"npm:$openclaw_version\"",
+      "printf 'CLAWLAB_STEP:using Kova target %s\\n' \"$kova_target\" >&2",
+    ].join("\n");
+  }
+  if (candidate.kind === "package") {
+    return [
+      stepCommand(`resolve Kova source target for ${candidate.label}`),
+      `openclaw_version=$(npm view ${quote(candidate.label)} version)`,
+      "openclaw_ref=\"v$openclaw_version\"",
+      `openclaw_target_repo=${quote(openclawCache)}`,
+      'if [ -d "$openclaw_target_repo/.git" ]; then',
+      "  " + stepCommand("fetch cached OpenClaw Kova target source"),
+      '  git -C "$openclaw_target_repo" fetch --depth 1 origin "$openclaw_ref"',
+      "else",
+      "  " + stepCommand("clone OpenClaw Kova target source"),
+      '  mkdir -p "$(dirname "$openclaw_target_repo")"',
+      '  git clone --filter=blob:none https://github.com/openclaw/openclaw.git "$openclaw_target_repo"',
+      '  git -C "$openclaw_target_repo" fetch --depth 1 origin "$openclaw_ref"',
+      "fi",
+      'printf \'CLAWLAB_STEP:using Kova source ref %s\\n\' "$openclaw_ref" >&2',
+      'git -C "$openclaw_target_repo" checkout -q FETCH_HEAD',
+      'git -C "$openclaw_target_repo" reset --hard -q FETCH_HEAD',
+      `kova_target="local-build:${openclawCache}"`,
       "printf 'CLAWLAB_STEP:using Kova target %s\\n' \"$kova_target\" >&2",
     ].join("\n");
   }
@@ -901,7 +929,7 @@ function kovaTargetScript(candidate, options) {
   ].join("\n");
 }
 
-function kovaCommand(candidate, profile, options, outputDir) {
+function kovaCommand(candidate: Candidate, profile: Profile, options: CliOptions, outputDir: string): string[] {
   const kovaCache = resolve(options.cacheRoot, "repos/kova");
   const toolPrefix = resolve(options.cacheRoot, "tools");
   const reportDir = resolve(outputDir, "kova/reports/mock-provider");
@@ -916,7 +944,7 @@ function kovaCommand(candidate, profile, options, outputDir) {
     `if [ ! -x ${quote(resolve(toolPrefix, "bin/ocm"))} ]; then curl -fsSL https://raw.githubusercontent.com/shakkernerd/ocm/main/install.sh | bash -s -- --version ${quote(ocmVersion)} --prefix ${quote(toolPrefix)} --force; fi`,
     `export PATH=${quote(resolve(toolPrefix, "bin"))}:$PATH`,
     `export KOVA_HOME=${quote(homeDir)}`,
-    kovaTargetScript(candidate, options),
+    kovaTargetScript(candidate, profile, options),
     stepCommand("kova version"),
     "node \"$kova_repo/bin/kova.mjs\" version --plain --no-color",
     stepCommand(`kova matrix plan ${profile.kovaProfile}`),
@@ -951,7 +979,7 @@ function kovaCommand(candidate, profile, options, outputDir) {
   return ["bash", "--noprofile", "--norc", "-c", command];
 }
 
-function latestJsonFile(dir) {
+function latestJsonFile(dir: string): string | null {
   try {
     return readdirSync(dir)
       .filter((name) => name.endsWith(".json"))
@@ -963,7 +991,7 @@ function latestJsonFile(dir) {
   }
 }
 
-function readJsonFile(file) {
+function readJsonFile(file: string | null): any {
   if (!file) return null;
   try {
     return JSON.parse(readFileSync(file, "utf8"));
@@ -972,7 +1000,7 @@ function readJsonFile(file) {
   }
 }
 
-function kovaReportHighlights(report) {
+function kovaReportHighlights(report: any): string[] {
   if (!report || typeof report !== "object") return [];
   const highlights = [];
   const verdict = report.gate?.verdict ?? report.summary?.verdict ?? report.verdict;
@@ -1010,7 +1038,7 @@ function kovaReportHighlights(report) {
   return highlights;
 }
 
-function kovaReportOk(report) {
+function kovaReportOk(report: any): boolean {
   if (!report || typeof report !== "object") return false;
   const gateVerdict = report.gate?.verdict ?? report.summary?.verdict ?? report.verdict;
   if (["FAIL", "BLOCK", "BLOCKED"].includes(String(gateVerdict ?? "").toUpperCase())) {
@@ -1023,7 +1051,7 @@ function kovaReportOk(report) {
     .every(([, count]) => Number(count) === 0);
 }
 
-async function runKova(candidate, profile, options, outputDir) {
+async function runKova(candidate: Candidate, profile: Profile, options: CliOptions, outputDir: string): Promise<RunResult | null> {
   if (!options.suites.has("kova")) return null;
   const command = kovaCommand(candidate, profile, options, outputDir);
   const reportDir = resolve(outputDir, "kova/reports/mock-provider");
@@ -1043,7 +1071,7 @@ async function runKova(candidate, profile, options, outputDir) {
   logStatus(options, `cache: kova repo ${resolve(options.cacheRoot, "repos/kova")}`);
   logStatus(options, `cache: ocm tools ${resolve(options.cacheRoot, "tools")}`);
   const startedAt = new Date().toISOString();
-  const result = await runLiveProcess(command, "kova: mock-provider", options);
+  const result: RunResult = await runLiveProcess(command, "kova: mock-provider", options);
   const reportJson = latestJsonFile(reportDir);
   const report = readJsonFile(reportJson);
   const reportOk = kovaReportOk(report);
@@ -1070,9 +1098,9 @@ async function runKova(candidate, profile, options, outputDir) {
   return run;
 }
 
-async function runLocalCrabpot(candidate, options) {
+async function runLocalCrabpot(candidate: Candidate, options: CliOptions): Promise<RunResult | null> {
   if (!options.suites.has("crabpot")) return null;
-  const commands = [
+  const commands: Array<[string, string[]]> = [
     ["npm", ["run", "check"]],
     ["npm", ["run", "plugin-inspector:smoke"]],
   ];
@@ -1084,7 +1112,7 @@ async function runLocalCrabpot(candidate, options) {
       continue;
     }
     logStatus(options, `crabpot: running ${cmd} ${args.join(" ")}`);
-    const result = await runLiveProcess([cmd, ...args], `crabpot: ${cmd} ${args.join(" ")}`, options, {
+    const result: RunResult = await runLiveProcess([cmd, ...args], `crabpot: ${cmd} ${args.join(" ")}`, options, {
       cwd: options.crabpotRoot,
     });
     results.push({
@@ -1107,7 +1135,7 @@ async function runLocalCrabpot(candidate, options) {
   };
 }
 
-function writePromptManifest(outputDir) {
+function writePromptManifest(outputDir: string): JsonObject[] {
   const prompts = [
     "release-smoke.md",
     "plugin-canary.md",
@@ -1123,7 +1151,7 @@ function writePromptManifest(outputDir) {
   return prompts;
 }
 
-function statusText(run) {
+function statusText(run: JsonObject): string {
   if (run.action === "dry-run") return "dry-run";
   if (run.ok === true) return `pass${run.exitCode !== undefined ? ` (exit ${run.exitCode})` : ""}`;
   if (run.ok === false) return `fail${run.exitCode !== undefined ? ` (exit ${run.exitCode})` : ""}`;
@@ -1131,7 +1159,7 @@ function statusText(run) {
   return run.action ?? "unknown";
 }
 
-function fencedBlock(value) {
+function fencedBlock(value: unknown): string[] {
   const text = String(value ?? "")
     .trim()
     .split("\n")
@@ -1141,7 +1169,7 @@ function fencedBlock(value) {
   return ["", "```text", text, "```"];
 }
 
-function downloadSummaryLines(run) {
+function downloadSummaryLines(run: JsonObject): string[] {
   const lines = [
     `### ${run.lane}`,
     "",
@@ -1159,7 +1187,7 @@ function downloadSummaryLines(run) {
   return [...lines, ""];
 }
 
-function crabboxSummaryLines(run) {
+function crabboxSummaryLines(run: JsonObject): string[] {
   const lines = [
     `### ${run.lane}`,
     "",
@@ -1178,7 +1206,7 @@ function crabboxSummaryLines(run) {
   return [...lines, ""];
 }
 
-function kovaSummaryLines(run) {
+function kovaSummaryLines(run: JsonObject | null): string[] {
   if (!run) {
     return ["- skipped: Kova suite was not selected.", ""];
   }
@@ -1204,7 +1232,7 @@ function kovaSummaryLines(run) {
   return [...lines, ""];
 }
 
-function localCrabpotSummaryLines(crabpot) {
+function localCrabpotSummaryLines(crabpot: JsonObject): string[] {
   const lines = [`- status: ${crabpot.ok ? "pass" : "fail"}`, ""];
   for (const result of crabpot.results) {
     lines.push(`### ${result.command}`, "", `- status: ${statusText(result)}`);
@@ -1219,7 +1247,7 @@ function localCrabpotSummaryLines(crabpot) {
   return lines;
 }
 
-function notRunLines(summary) {
+function notRunLines(summary: JsonObject): string[] {
   const lines = [];
   if (summary.github.length === 0) {
     lines.push("- GitHub: remote workflows were not selected. Use `--remote` or `--suite github` to enable.");
@@ -1242,7 +1270,7 @@ function notRunLines(summary) {
   return lines.length > 0 ? ["## Not Run", ...lines, ""] : [];
 }
 
-function writeSummary(outputDir, summary) {
+function writeSummary(outputDir: string, summary: JsonObject): void {
   writeFileSync(resolve(outputDir, "manifest.json"), `${JSON.stringify(summary, null, 2)}\n`);
   const lines = [
     `# Clawlab ${summary.candidate.label}`,
@@ -1279,7 +1307,7 @@ function writeSummary(outputDir, summary) {
   writeFileSync(resolve(outputDir, "summary.md"), `${lines.join("\n")}\n`);
 }
 
-function verdictFor(summary) {
+function verdictFor(summary: JsonObject): string {
   const failedDownload = summary.download.some((run) => run.exitCode !== undefined && run.exitCode !== 0);
   const failedKova = summary.kova && summary.kova.ok === false;
   const failedCrabbox = summary.crabbox.some((run) => run.exitCode !== undefined && run.exitCode !== 0);
@@ -1296,11 +1324,11 @@ function verdictFor(summary) {
   return "LOCAL_PASS";
 }
 
-function sleep(ms) {
+function sleep(ms: number): Promise<void> {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
 }
 
-async function watchGithubRuns(runs) {
+async function watchGithubRuns(runs: JsonObject[]): Promise<JsonObject[]> {
   const watched = runs.map((run) => ({ ...run }));
   const watchable = watched.filter((run) => run.id && run.type === "github");
   if (watchable.length === 0) return watched;
@@ -1397,7 +1425,7 @@ async function main() {
     logStatus(options, `prompts: wrote prompt pack (${prompts.length} prompts)`);
   }
 
-  const summary = {
+  const summary: JsonObject = {
     candidate,
     profile: options.profile,
     fingerprint,

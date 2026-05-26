@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 
 describe("clawlab cli", () => {
   it("prints help successfully", () => {
-    const output = execFileSync("node", ["bin/clawlab.mjs", "--help"], {
+    const output = execFileSync("node", ["dist/clawlab.js", "--help"], {
       encoding: "utf8",
     });
     assert.match(output, /clawlab test openclaw@beta/u);
@@ -12,7 +12,7 @@ describe("clawlab cli", () => {
 
   it("builds a dry-run remote github plan", () => {
     const output = execFileSync("node", [
-      "bin/clawlab.mjs",
+      "dist/clawlab.js",
       "test",
       "openclaw@beta",
       "--profile",
@@ -30,7 +30,7 @@ describe("clawlab cli", () => {
 
   it("builds a dry-run package/cache plan without a repo checkout", () => {
     const output = execFileSync("node", [
-      "bin/clawlab.mjs",
+      "dist/clawlab.js",
       "test",
       "openclaw@beta",
       "--profile",
@@ -47,7 +47,7 @@ describe("clawlab cli", () => {
 
   it("uses standard as a meaningful default profile", () => {
     const output = execFileSync("node", [
-      "bin/clawlab.mjs",
+      "dist/clawlab.js",
       "test",
       "openclaw@beta",
       "--dry-run",
@@ -60,5 +60,19 @@ describe("clawlab cli", () => {
       ["package-smoke", "cli-smoke", "crabpot"],
     );
     assert.equal(summary.github.length, 0);
+  });
+
+  it("uses a local-build Kova target for the default diagnostic profile", () => {
+    const output = execFileSync("node", [
+      "dist/clawlab.js",
+      "test",
+      "openclaw@beta",
+      "--dry-run",
+      "--json",
+    ], { encoding: "utf8" });
+    const summary = JSON.parse(output);
+    assert.equal(summary.kova.profile, "diagnostic");
+    assert.match(summary.kova.command, /kova_target="local-build:/u);
+    assert.doesNotMatch(summary.kova.command, /kova_target="npm:/u);
   });
 });

@@ -10,18 +10,28 @@
   "license": "MIT",
   "preferGlobal": true,
   "files": [
-    "bin/",
+    "dist/",
     "prompts/",
+    "src/",
+    "AGENTS.md",
     "README.md",
     "package.json"
   ],
   "bin": {
-    "clawlab": "bin/clawlab.mjs"
+    "clawlab": "dist/clawlab.js"
   },
   "scripts": {
-    "test": "node --test test/*.test.mjs"
+    "build": "tsc",
+    "postbuild": "node -e \"require('node:fs').chmodSync('dist/clawlab.js', 0o755)\"",
+    "test": "npm run build && node --test --import tsx test/*.test.ts",
+    "prepack": "npm run build"
   },
   "engines": {
     "node": ">=22"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.1",
+    "tsx": "^4.22.3",
+    "typescript": "^6.0.3"
   }
 }
