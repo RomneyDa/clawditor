@@ -1,11 +1,11 @@
 {
-  "name": "clawlab",
+  "name": "clawditor",
   "version": "0.1.0",
   "type": "module",
   "description": "One-command OpenClaw beta and release-candidate validation launcher.",
   "repository": {
     "type": "git",
-    "url": "https://github.com/RomneyDa/clawlab.git"
+    "url": "https://github.com/RomneyDa/clawditor.git"
   },
   "license": "MIT",
   "preferGlobal": true,
@@ -18,14 +18,14 @@
     "package.json"
   ],
   "bin": {
-    "clawlab": "dist/clawlab.js"
+    "clawditor": "dist/clawditor.js"
   },
   "scripts": {
     "build": "tsc",
-    "postbuild": "node -e \"require('node:fs').chmodSync('dist/clawlab.js', 0o755)\"",
+    "postbuild": "node -e \"require('node:fs').chmodSync('dist/clawditor.js', 0o755)\"",
     "test": "npm run build && node --test --import tsx test/*.test.ts",
     "prepack": "npm run build",
-    "prepare": "node -e \"require('node:fs').chmodSync('dist/clawlab.js', 0o755)\""
+    "prepare": "node -e \"require('node:fs').chmodSync('dist/clawditor.js', 0o755)\""
   },
   "engines": {
     "node": ">=22"

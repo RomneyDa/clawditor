@@ -1,4 +1,4 @@
-# clawlab
+# clawditor
 
 One-command OpenClaw beta and release-candidate validation launcher.
 
@@ -7,7 +7,7 @@ One-command OpenClaw beta and release-candidate validation launcher.
 From GitHub:
 
 ```sh
-npm install -g https://github.com/RomneyDa/clawlab/archive/refs/heads/main.tar.gz
+npm install -g https://github.com/RomneyDa/clawditor/archive/refs/heads/main.tar.gz
 ```
 
 From a local checkout:
@@ -23,7 +23,7 @@ npm link
 ```
 
 Source lives in `src/` as TypeScript. The global CLI runs the compiled
-`dist/clawlab.js` build:
+`dist/clawditor.js` build:
 
 ```sh
 npm run build
@@ -33,9 +33,9 @@ npm test
 Then run it from any directory:
 
 ```sh
-clawlab test openclaw@beta
-clawlab test openclaw@2026.5.26-beta.1 --profile full
-clawlab test --ref release/2026.5.26 --profile smoke
+clawditor test openclaw@beta
+clawditor test openclaw@2026.5.26-beta.1 --profile full
+clawditor test --ref release/2026.5.26 --profile smoke
 ```
 
 Requirements:
@@ -48,22 +48,22 @@ Requirements:
   plugin fixtures that include Git LFS-backed submodules
 
 Normal use is local-first and does not require OpenClaw or Crabpot checkouts.
-`clawlab` installs candidate npm packages into temporary homes for smoke checks
+`clawditor` installs candidate npm packages into temporary homes for smoke checks
 and uses reusable cached source checkouts only when the Crabpot lane runs.
 
 The default path also runs Kova locally through the mock-provider performance
-lane. For package candidates such as `openclaw@beta`, Clawlab resolves the
+lane. For package candidates such as `openclaw@beta`, Clawditor resolves the
 published version, checks out the matching OpenClaw source tag, and asks Kova's
 diagnostic profile to test that checkout as `local-build:<path>`. The lighter
 smoke profile can use Kova's `npm:<version>` target directly. Kova and OCM are
-cached under the Clawlab cache root.
+cached under the Clawditor cache root.
 
 For package candidates such as `openclaw@beta`, the Crabpot lane resolves the
 published package version and checks out the matching OpenClaw source tag
 (`v<version>`). If that source ref is missing, the lane fails instead of testing
 against an unrelated checkout.
 
-During normal terminal runs, Clawlab streams subprocess output with a lane prefix
+During normal terminal runs, Clawditor streams subprocess output with a lane prefix
 while also saving the tail in `manifest.json`. This is the default for download,
 Crabbox, and local Crabpot lanes. `--json` keeps the terminal output
 machine-parseable and only prints the final summary JSON.
@@ -71,16 +71,16 @@ machine-parseable and only prints the final summary JSON.
 Downloads are cached in the OS cache directory by default:
 
 ```text
-macOS: ~/Library/Caches/clawlab
-Linux: ~/.cache/clawlab, or $XDG_CACHE_HOME/clawlab
-Windows: %LOCALAPPDATA%\\clawlab\\cache
+macOS: ~/Library/Caches/clawditor
+Linux: ~/.cache/clawditor, or $XDG_CACHE_HOME/clawditor
+Windows: %LOCALAPPDATA%\\clawditor\\cache
 ```
 
 The cache contains a shared npm cache plus reusable Crabpot and OpenClaw source
 checkouts, Kova, and OCM tooling:
 
 ```text
-clawlab/
+clawditor/
   npm/
   repos/
     crabpot/
@@ -92,32 +92,32 @@ clawlab/
 Override it with:
 
 ```sh
-clawlab test openclaw@beta --cache /path/to/cache
+clawditor test openclaw@beta --cache /path/to/cache
 ```
 
 GitHub Actions are opt-in:
 
 ```sh
-clawlab test openclaw@beta --remote
+clawditor test openclaw@beta --remote
 ```
 
 Local checkouts are optional dev overrides for advanced local Crabbox/Crabpot
 lanes:
 
 ```sh
-clawlab test openclaw@beta --suite crabbox --repo /path/to/openclaw
-clawlab test openclaw@beta --suite crabpot --crabpot /path/to/crabpot
+clawditor test openclaw@beta --suite crabbox --repo /path/to/openclaw
+clawditor test openclaw@beta --suite crabpot --crabpot /path/to/crabpot
 ```
 
 ## Duplicate workflow control
 
-When `--remote` is passed, `clawlab` uses the umbrella `Full Release Validation`
+When `--remote` is passed, `clawditor` uses the umbrella `Full Release Validation`
 workflow for standard and full profiles. That keeps GitHub-side release work
 behind one workflow and uses that workflow's concurrency groups instead of
 dispatching separate package, plugin, release, and performance workflows for
 every user.
 
-For separate workflow mode, `clawlab` checks active `workflow_dispatch` runs for
+For separate workflow mode, `clawditor` checks active `workflow_dispatch` runs for
 the same workflow and reuses the active run instead of starting another one.
 GitHub does not expose workflow-dispatch inputs in `gh run list`, so this check
 is intentionally conservative. Pass `--force-workflows` or `--no-dedupe` only
@@ -137,13 +137,13 @@ when you explicitly want a fresh run.
 Use `--suite` to limit work:
 
 ```sh
-clawlab test openclaw@beta --suite github
-clawlab test openclaw@beta --suite download
-clawlab test openclaw@beta --suite kova
-clawlab test openclaw@beta --dry-run
+clawditor test openclaw@beta --suite github
+clawditor test openclaw@beta --suite download
+clawditor test openclaw@beta --suite kova
+clawditor test openclaw@beta --dry-run
 ```
 
-Outputs are written under `.artifacts/clawlab-*` with:
+Outputs are written under `.artifacts/clawditor-*` with:
 
 - `manifest.json`
 - `summary.md`

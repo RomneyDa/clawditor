@@ -2,17 +2,17 @@ import { execFileSync } from "node:child_process";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-describe("clawlab cli", () => {
+describe("clawditor cli", () => {
   it("prints help successfully", () => {
-    const output = execFileSync("node", ["dist/clawlab.js", "--help"], {
+    const output = execFileSync("node", ["dist/clawditor.js", "--help"], {
       encoding: "utf8",
     });
-    assert.match(output, /clawlab test openclaw@beta/u);
+    assert.match(output, /clawditor test openclaw@beta/u);
   });
 
   it("builds a dry-run remote github plan", () => {
     const output = execFileSync("node", [
-      "dist/clawlab.js",
+      "dist/clawditor.js",
       "test",
       "openclaw@beta",
       "--profile",
@@ -30,7 +30,7 @@ describe("clawlab cli", () => {
 
   it("builds a dry-run package/cache plan without a repo checkout", () => {
     const output = execFileSync("node", [
-      "dist/clawlab.js",
+      "dist/clawditor.js",
       "test",
       "openclaw@beta",
       "--profile",
@@ -47,7 +47,7 @@ describe("clawlab cli", () => {
 
   it("uses standard as a meaningful default profile", () => {
     const output = execFileSync("node", [
-      "dist/clawlab.js",
+      "dist/clawditor.js",
       "test",
       "openclaw@beta",
       "--dry-run",
@@ -64,7 +64,7 @@ describe("clawlab cli", () => {
 
   it("uses a local-build Kova target for the default diagnostic profile", () => {
     const output = execFileSync("node", [
-      "dist/clawlab.js",
+      "dist/clawditor.js",
       "test",
       "openclaw@beta",
       "--dry-run",

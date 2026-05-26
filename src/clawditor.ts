@@ -64,8 +64,8 @@ const defaultSuites = new Set(["download", "kova", "prompts"]);
 
 function usage() {
   return `Usage:
-  clawlab test openclaw@beta [options]
-  clawlab test --ref release/2026.5.26 [options]
+  clawditor test openclaw@beta [options]
+  clawditor test --ref release/2026.5.26 [options]
 
 Options:
   --profile smoke|standard|full       Coverage profile (default: standard)
@@ -175,16 +175,16 @@ function defaultPaths() {
 }
 
 function resolveCacheRoot() {
-  if (process.env.CLAWLAB_CACHE_DIR) {
-    return resolve(process.env.CLAWLAB_CACHE_DIR);
+  if (process.env.CLAWDITOR_CACHE_DIR) {
+    return resolve(process.env.CLAWDITOR_CACHE_DIR);
   }
   if (platform() === "darwin") {
-    return resolve(homedir(), "Library/Caches/clawlab");
+    return resolve(homedir(), "Library/Caches/clawditor");
   }
   if (platform() === "win32") {
-    return resolve(process.env.LOCALAPPDATA ?? resolve(homedir(), "AppData/Local"), "clawlab/cache");
+    return resolve(process.env.LOCALAPPDATA ?? resolve(homedir(), "AppData/Local"), "clawditor/cache");
   }
-  return resolve(process.env.XDG_CACHE_HOME ?? resolve(homedir(), ".cache"), "clawlab");
+  return resolve(process.env.XDG_CACHE_HOME ?? resolve(homedir(), ".cache"), "clawditor");
 }
 
 function isOpenclawRepo(path: string): boolean {
@@ -233,7 +233,7 @@ function logStatus(options: CliOptions, message: string): void {
 }
 
 function stepCommand(label: string): string {
-  return `printf 'CLAWLAB_STEP:%s\\n' ${quote(label)} >&2`;
+  return `printf 'CLAWDITOR_STEP:%s\\n' ${quote(label)} >&2`;
 }
 
 function elapsedSeconds(startedMs: number): number {
@@ -288,7 +288,7 @@ function missingCommandError(missing: string[]): string {
   if (missing.includes("git-lfs")) {
     lines.push("git-lfs is required by the default Crabpot lane because some plugin fixtures use Git LFS-backed submodules.");
     lines.push("On macOS with Homebrew: brew install git-lfs && git lfs install");
-    lines.push("To run the lighter local package smoke without Crabpot: clawlab test openclaw@beta --profile smoke");
+    lines.push("To run the lighter local package smoke without Crabpot: clawditor test openclaw@beta --profile smoke");
   }
   return lines.join("\n");
 }
@@ -594,16 +594,16 @@ function crabboxCommand(lane: string, candidate: Candidate, options: CliOptions)
         "export OPENCLAW_HOME=\"$tmp/openclaw\"",
         "export OPENCLAW_STATE_DIR=\"$tmp/state\"",
         "npm install -g \"$OPENCLAW_CANDIDATE_PACKAGE\"",
-        "openclaw --help >/tmp/clawlab-openclaw-help.txt",
-        "openclaw doctor --help >/tmp/clawlab-doctor-help.txt",
-        "openclaw config --help >/tmp/clawlab-config-help.txt",
-        "openclaw plugins --help >/tmp/clawlab-plugins-help.txt",
-        "test -s /tmp/clawlab-openclaw-help.txt",
-        "test -s /tmp/clawlab-doctor-help.txt",
-        "test -s /tmp/clawlab-config-help.txt",
-        "test -s /tmp/clawlab-plugins-help.txt",
+        "openclaw --help >/tmp/clawditor-openclaw-help.txt",
+        "openclaw doctor --help >/tmp/clawditor-doctor-help.txt",
+        "openclaw config --help >/tmp/clawditor-config-help.txt",
+        "openclaw plugins --help >/tmp/clawditor-plugins-help.txt",
+        "test -s /tmp/clawditor-openclaw-help.txt",
+        "test -s /tmp/clawditor-doctor-help.txt",
+        "test -s /tmp/clawditor-config-help.txt",
+        "test -s /tmp/clawditor-plugins-help.txt",
       ].join(" && ")
-      : "echo CRABBOX_PHASE:cli-smoke && corepack pnpm openclaw --help >/tmp/clawlab-openclaw-help.txt && test -s /tmp/clawlab-openclaw-help.txt",
+      : "echo CRABBOX_PHASE:cli-smoke && corepack pnpm openclaw --help >/tmp/clawditor-openclaw-help.txt && test -s /tmp/clawditor-openclaw-help.txt",
     crabpot: [
       "echo CRABBOX_PHASE:crabpot",
       "tmp=$(mktemp -d)",
@@ -615,8 +615,8 @@ function crabboxCommand(lane: string, candidate: Candidate, options: CliOptions)
     ].join(" && "),
     "prompt-pack": [
       "echo CRABBOX_PHASE:prompt-pack",
-      "mkdir -p .artifacts/clawlab-prompts",
-      "corepack pnpm openclaw qa manual --provider-mode mock-openai --message 'Run a compact release smoke turn: check model routing, plugin visibility, and gateway readiness. Return PASS/WARN/FAIL with evidence.' --output-dir .artifacts/clawlab-prompts/release-smoke",
+      "mkdir -p .artifacts/clawditor-prompts",
+      "corepack pnpm openclaw qa manual --provider-mode mock-openai --message 'Run a compact release smoke turn: check model routing, plugin visibility, and gateway readiness. Return PASS/WARN/FAIL with evidence.' --output-dir .artifacts/clawditor-prompts/release-smoke",
     ].join(" && "),
   };
 
@@ -701,13 +701,13 @@ else
   mkdir -p "$(dirname "$openclaw_repo")"
   git clone --depth 1 https://github.com/openclaw/openclaw.git "$openclaw_repo"
 fi
-printf 'CLAWLAB_STEP:using OpenClaw source ref %s\\n' "$openclaw_ref" >&2
+printf 'CLAWDITOR_STEP:using OpenClaw source ref %s\\n' "$openclaw_ref" >&2
 if git -C "$openclaw_repo" fetch --depth 1 origin "$openclaw_ref"; then
   ${stepCommand("checkout OpenClaw source")}
   git -C "$openclaw_repo" checkout -q FETCH_HEAD
   git -C "$openclaw_repo" reset --hard -q FETCH_HEAD
 else
-  printf 'CLAWLAB_STEP:WARN OpenClaw source ref %s was not found\\n' "$openclaw_ref" >&2
+  printf 'CLAWDITOR_STEP:WARN OpenClaw source ref %s was not found\\n' "$openclaw_ref" >&2
   exit 1
 fi`;
   const crabpotSync = `repo=${quote(crabpotCache)}
@@ -748,18 +748,18 @@ cd "$repo"`;
     "cli-smoke": [
       ...isolatedPackageInstall,
       stepCommand("openclaw --help"),
-      "openclaw --help >/tmp/clawlab-openclaw-help.txt",
+      "openclaw --help >/tmp/clawditor-openclaw-help.txt",
       stepCommand("openclaw doctor --help"),
-      "openclaw doctor --help >/tmp/clawlab-doctor-help.txt",
+      "openclaw doctor --help >/tmp/clawditor-doctor-help.txt",
       stepCommand("openclaw config --help"),
-      "openclaw config --help >/tmp/clawlab-config-help.txt",
+      "openclaw config --help >/tmp/clawditor-config-help.txt",
       stepCommand("openclaw plugins --help"),
-      "openclaw plugins --help >/tmp/clawlab-plugins-help.txt",
+      "openclaw plugins --help >/tmp/clawditor-plugins-help.txt",
       stepCommand("verify CLI help output"),
-      "test -s /tmp/clawlab-openclaw-help.txt",
-      "test -s /tmp/clawlab-doctor-help.txt",
-      "test -s /tmp/clawlab-config-help.txt",
-      "test -s /tmp/clawlab-plugins-help.txt",
+      "test -s /tmp/clawditor-openclaw-help.txt",
+      "test -s /tmp/clawditor-doctor-help.txt",
+      "test -s /tmp/clawditor-config-help.txt",
+      "test -s /tmp/clawditor-plugins-help.txt",
     ].join(" && "),
     crabpot: [
       "set -euo pipefail",
@@ -800,8 +800,8 @@ function runLiveProcess(command: string[], prefix: string, options: CliOptions, 
     let spawnError: Error | null = null;
 
     const rememberLine = (line: string) => {
-      if (line.startsWith("CLAWLAB_STEP:")) {
-        currentStep = line.slice("CLAWLAB_STEP:".length).trim();
+      if (line.startsWith("CLAWDITOR_STEP:")) {
+        currentStep = line.slice("CLAWDITOR_STEP:".length).trim();
         if (currentStep.startsWith("WARN ")) {
           logStatus(options, `${prefix}: ${currentStep}`);
         } else {
@@ -891,7 +891,7 @@ function kovaTargetScript(candidate: Candidate, profile: Profile, options: CliOp
       stepCommand(`resolve Kova npm target for ${candidate.label}`),
       `openclaw_version=$(npm view ${quote(candidate.label)} version)`,
       "kova_target=\"npm:$openclaw_version\"",
-      "printf 'CLAWLAB_STEP:using Kova target %s\\n' \"$kova_target\" >&2",
+      "printf 'CLAWDITOR_STEP:using Kova target %s\\n' \"$kova_target\" >&2",
     ].join("\n");
   }
   if (candidate.kind === "package") {
@@ -909,11 +909,11 @@ function kovaTargetScript(candidate: Candidate, profile: Profile, options: CliOp
       '  git clone --filter=blob:none https://github.com/openclaw/openclaw.git "$openclaw_target_repo"',
       '  git -C "$openclaw_target_repo" fetch --depth 1 origin "$openclaw_ref"',
       "fi",
-      'printf \'CLAWLAB_STEP:using Kova source ref %s\\n\' "$openclaw_ref" >&2',
+      'printf \'CLAWDITOR_STEP:using Kova source ref %s\\n\' "$openclaw_ref" >&2',
       'git -C "$openclaw_target_repo" checkout -q FETCH_HEAD',
       'git -C "$openclaw_target_repo" reset --hard -q FETCH_HEAD',
       `kova_target="local-build:${openclawCache}"`,
-      "printf 'CLAWLAB_STEP:using Kova target %s\\n' \"$kova_target\" >&2",
+      "printf 'CLAWDITOR_STEP:using Kova target %s\\n' \"$kova_target\" >&2",
     ].join("\n");
   }
   return [
@@ -925,7 +925,7 @@ function kovaTargetScript(candidate: Candidate, profile: Profile, options: CliOp
       "OpenClaw Kova target source",
     ),
     `kova_target="local-build:${openclawCache}"`,
-    "printf 'CLAWLAB_STEP:using Kova target %s\\n' \"$kova_target\" >&2",
+    "printf 'CLAWDITOR_STEP:using Kova target %s\\n' \"$kova_target\" >&2",
   ].join("\n");
 }
 
@@ -955,7 +955,7 @@ function kovaCommand(candidate: Candidate, profile: Profile, options: CliOptions
       "--target",
       "\"$kova_target\"",
       ...filters.map(quote),
-      "--json >/tmp/clawlab-kova-plan.json",
+      "--json >/tmp/clawditor-kova-plan.json",
     ].join(" "),
     stepCommand(`kova matrix run ${profile.kovaProfile}`),
     [
@@ -1273,7 +1273,7 @@ function notRunLines(summary: JsonObject): string[] {
 function writeSummary(outputDir: string, summary: JsonObject): void {
   writeFileSync(resolve(outputDir, "manifest.json"), `${JSON.stringify(summary, null, 2)}\n`);
   const lines = [
-    `# Clawlab ${summary.candidate.label}`,
+    `# Clawditor ${summary.candidate.label}`,
     "",
     `- profile: ${summary.profile}`,
     `- fingerprint: ${summary.fingerprint}`,
@@ -1388,12 +1388,12 @@ async function main() {
     githubMode: options.githubMode,
     suites: [...options.suites].sort(),
   }));
-  const outputDir = resolve(options.outputRoot, `clawlab-${new Date().toISOString().replaceAll(/[:.]/gu, "-")}-${fingerprint}`);
+  const outputDir = resolve(options.outputRoot, `clawditor-${new Date().toISOString().replaceAll(/[:.]/gu, "-")}-${fingerprint}`);
   mkdirSync(outputDir, { recursive: true });
-  logStatus(options, `clawlab: candidate ${candidate.label}`);
-  logStatus(options, `clawlab: profile ${options.profile}`);
-  logStatus(options, `clawlab: suites ${[...options.suites].join(", ") || "none"}`);
-  logStatus(options, `clawlab: writing artifacts to ${relative(process.cwd(), outputDir)}`);
+  logStatus(options, `clawditor: candidate ${candidate.label}`);
+  logStatus(options, `clawditor: profile ${options.profile}`);
+  logStatus(options, `clawditor: suites ${[...options.suites].join(", ") || "none"}`);
+  logStatus(options, `clawditor: writing artifacts to ${relative(process.cwd(), outputDir)}`);
 
   const preflightData = preflight(options, profile);
   if (!options.suites.has("github")) {
@@ -1451,13 +1451,13 @@ async function main() {
   if (options.json) {
     process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
   } else {
-    process.stdout.write(`clawlab: ${summary.verdict}\n`);
+    process.stdout.write(`clawditor: ${summary.verdict}\n`);
     process.stdout.write(`candidate: ${candidate.label}\n`);
     process.stdout.write(`summary: ${relative(process.cwd(), resolve(outputDir, "summary.md"))}\n`);
   }
 }
 
 main().catch((error) => {
-  process.stderr.write(`clawlab: ${error.message}\n`);
+  process.stderr.write(`clawditor: ${error.message}\n`);
   process.exit(1);
 });
