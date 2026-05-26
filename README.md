@@ -30,10 +30,18 @@ clawlab test openclaw@2026.5.26-beta.1 --profile full
 clawlab test --ref release/2026.5.26 --profile smoke
 ```
 
+Requirements:
+
+- Node.js
+- npm and npx
+- git
+- git-lfs for the default `standard` and `full` profiles, because Crabpot syncs
+  plugin fixtures that include Git LFS-backed submodules
+
 Normal use is local-first and does not require OpenClaw or Crabpot checkouts.
 `clawlab` installs candidate npm packages into temporary homes for smoke checks
-and clones Crabpot into a temporary directory only when the downloadable Crabpot
-lane runs.
+and uses reusable cached source checkouts only when the downloadable Crabpot lane
+runs.
 
 Downloads are cached in the OS cache directory by default:
 
@@ -43,12 +51,15 @@ Linux: ~/.cache/clawlab, or $XDG_CACHE_HOME/clawlab
 Windows: %LOCALAPPDATA%\\clawlab\\cache
 ```
 
-The cache contains a shared npm cache and a reusable Crabpot checkout:
+The cache contains a shared npm cache plus reusable Crabpot and OpenClaw source
+checkouts:
 
 ```text
 clawlab/
   npm/
-  repos/crabpot/
+  repos/
+    crabpot/
+    openclaw/
 ```
 
 Override it with:

@@ -208,6 +208,14 @@ function logStatus(options, message) {
   }
 }
 
+function stepCommand(label) {
+  return `printf 'CLAWLAB_STEP:%s\\n' ${quote(label)} >&2`;
+}
+
+function elapsedSeconds(startedMs) {
+  return Math.max(0, Math.round((Date.now() - startedMs) / 1000));
+}
+
 function readJsonCommand(command, args, cwd) {
   const result = runSync(command, args, { cwd, capture: true, allowFailure: true });
   if (result.status !== 0) return null;
@@ -218,7 +226,7 @@ function readJsonCommand(command, args, cwd) {
   }
 }
 
-function preflight(options) {
+function preflight(options, profile) {
   logStatus(options, "preflight: checking required tools");
   mkdirSync(options.cacheRoot, { recursive: true });
   const missing = [];
@@ -227,6 +235,9 @@ function preflight(options) {
   if (options.suites.has("download")) required.push("npm", "npx");
   if (options.suites.has("download") || options.suites.has("crabbox") || options.suites.has("crabpot")) {
     required.push("git");
+  }
+  if (!options.dryRun && options.suites.has("download") && profile.downloadLanes.includes("crabpot")) {
+    required.push("git-lfs");
   }
   for (const command of required) {
     if (!commandExists(command)) missing.push(command);
@@ -569,51 +580,101 @@ function downloadableCommand(lane, candidate, options) {
   const candidatePackage = candidate.kind === "package" ? candidate.label : "openclaw@beta";
   const npmCache = resolve(options.cacheRoot, "npm");
   const crabpotCache = resolve(options.cacheRoot, "repos/crabpot");
+  const openclawCache = resolve(options.cacheRoot, "repos/openclaw");
   const npmCacheEnv = `export npm_config_cache=${quote(npmCache)}`;
+  const sourceRefCommand = candidate.kind === "package"
+    ? [
+      stepCommand(`resolve source tag for ${candidatePackage}`),
+      `openclaw_version=$(npm view ${quote(candidatePackage)} version)`,
+      "openclaw_ref=\"v$openclaw_version\"",
+    ].join(" && ")
+    : `openclaw_ref=${quote(candidate.targetRef)}`;
+  const openclawSourceSync = `${sourceRefCommand}
+openclaw_repo=${quote(openclawCache)}
+if [ -d "$openclaw_repo/.git" ]; then
+  ${stepCommand("fetch cached OpenClaw source")}
+else
+  ${stepCommand("clone OpenClaw source")}
+  mkdir -p "$(dirname "$openclaw_repo")"
+  git clone --depth 1 https://github.com/openclaw/openclaw.git "$openclaw_repo"
+fi
+${stepCommand("checkout OpenClaw source")}
+if git -C "$openclaw_repo" fetch --depth 1 origin "$openclaw_ref"; then
+  git -C "$openclaw_repo" checkout -q FETCH_HEAD
+  git -C "$openclaw_repo" reset --hard -q FETCH_HEAD
+else
+  ${stepCommand("source tag unavailable; fallback to main")}
+  git -C "$openclaw_repo" fetch --depth 1 origin main
+  git -C "$openclaw_repo" checkout -q FETCH_HEAD
+  git -C "$openclaw_repo" reset --hard -q FETCH_HEAD
+fi`;
   const crabpotSync = `repo=${quote(crabpotCache)}
 if [ -d "$repo/.git" ]; then
+  ${stepCommand("fetch Crabpot crab-beta")}
   git -C "$repo" fetch --depth 1 origin crab-beta
 else
+  ${stepCommand("clone Crabpot crab-beta")}
   mkdir -p "$(dirname "$repo")"
   git clone --depth 1 --branch crab-beta https://github.com/openclaw/crabpot.git "$repo"
 fi
+${stepCommand("reset Crabpot checkout")}
 git -C "$repo" checkout -q crab-beta
 git -C "$repo" reset --hard -q origin/crab-beta
 cd "$repo"`;
   const isolatedPackageInstall = [
+    "set -euo pipefail",
+    stepCommand("create isolated temp home"),
     "tmp=$(mktemp -d)",
+    stepCommand("configure npm cache and temp prefix"),
     npmCacheEnv,
     "export npm_config_prefix=\"$tmp/prefix\"",
+    "export PATH=\"$npm_config_prefix/bin:$PATH\"",
     "export HOME=\"$tmp/home\"",
     "export OPENCLAW_HOME=\"$tmp/openclaw\"",
     "export OPENCLAW_STATE_DIR=\"$tmp/state\"",
+    stepCommand(`npm install -g ${candidatePackage}`),
     `npm install -g ${quote(candidatePackage)}`,
   ];
   const commands = {
     "package-smoke": [
       ...isolatedPackageInstall,
+      stepCommand("openclaw --version"),
       "openclaw --version",
+      stepCommand("openclaw doctor --non-interactive"),
       "openclaw doctor --non-interactive",
     ].join(" && "),
     "cli-smoke": [
       ...isolatedPackageInstall,
+      stepCommand("openclaw --help"),
       "openclaw --help >/tmp/clawlab-openclaw-help.txt",
+      stepCommand("openclaw doctor --help"),
       "openclaw doctor --help >/tmp/clawlab-doctor-help.txt",
+      stepCommand("openclaw config --help"),
       "openclaw config --help >/tmp/clawlab-config-help.txt",
+      stepCommand("openclaw plugins --help"),
       "openclaw plugins --help >/tmp/clawlab-plugins-help.txt",
+      stepCommand("verify CLI help output"),
       "test -s /tmp/clawlab-openclaw-help.txt",
       "test -s /tmp/clawlab-doctor-help.txt",
       "test -s /tmp/clawlab-config-help.txt",
       "test -s /tmp/clawlab-plugins-help.txt",
     ].join(" && "),
     crabpot: [
+      "set -euo pipefail",
+      stepCommand("configure npm cache"),
       npmCacheEnv,
+      openclawSourceSync,
       crabpotSync,
+      stepCommand("npm install in Crabpot"),
       "npm install",
+      stepCommand("npm run check in Crabpot"),
       "npm run check",
+      stepCommand("npm run plugin-inspector:smoke in Crabpot"),
       "npm run plugin-inspector:smoke",
     ].join(" && "),
     "prompt-pack": [
+      "set -euo pipefail",
+      stepCommand(`npx ${candidatePackage} openclaw --version`),
       `npx -y -p ${quote(candidatePackage)} openclaw --version`,
     ].join(" && "),
   };
@@ -623,7 +684,64 @@ cd "$repo"`;
   return ["bash", "-lc", commands[lane]];
 }
 
-function runDownloadLane(lane, candidate, options) {
+function runDownloadProcess(command, lane, options) {
+  return new Promise((resolveRun) => {
+    const startedMs = Date.now();
+    const child = spawn(command[0], command.slice(1), {
+      cwd: process.cwd(),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const lines = [];
+    let currentStep = "starting";
+    let pending = "";
+    let spawnError = null;
+
+    const rememberLine = (line) => {
+      if (line.startsWith("CLAWLAB_STEP:")) {
+        currentStep = line.slice("CLAWLAB_STEP:".length).trim();
+        logStatus(options, `download: ${lane}: running ${currentStep}`);
+        return;
+      }
+      lines.push(line);
+      if (lines.length > 200) {
+        lines.splice(0, lines.length - 200);
+      }
+    };
+
+    const rememberChunk = (chunk) => {
+      pending += chunk.toString("utf8");
+      const chunkLines = pending.split(/\r?\n/u);
+      pending = chunkLines.pop() ?? "";
+      for (const line of chunkLines) {
+        rememberLine(line);
+      }
+    };
+
+    child.stdout.on("data", rememberChunk);
+    child.stderr.on("data", rememberChunk);
+    child.on("error", (error) => {
+      spawnError = error;
+      rememberLine(error.message);
+    });
+
+    const heartbeat = setInterval(() => {
+      logStatus(options, `download: ${lane}: still running ${currentStep} (${elapsedSeconds(startedMs)}s)`);
+    }, 15000);
+
+    child.on("close", (code) => {
+      clearInterval(heartbeat);
+      if (pending) {
+        rememberLine(pending);
+      }
+      resolveRun({
+        exitCode: code ?? (spawnError ? 1 : 0),
+        outputTail: lines.slice(-30).join("\n").trim(),
+      });
+    });
+  });
+}
+
+async function runDownloadLane(lane, candidate, options) {
   const command = downloadableCommand(lane, candidate, options);
   if (options.dryRun) {
     logStatus(options, `download: dry-run ${lane} - ${downloadLaneDescriptions[lane] ?? "run downloadable lane"}`);
@@ -632,26 +750,25 @@ function runDownloadLane(lane, candidate, options) {
   logStatus(options, `download: running ${lane} - ${downloadLaneDescriptions[lane] ?? "run downloadable lane"}`);
   if (lane === "crabpot") {
     logStatus(options, `cache: crabpot repo ${resolve(options.cacheRoot, "repos/crabpot")}`);
+    logStatus(options, `cache: openclaw source ${resolve(options.cacheRoot, "repos/openclaw")}`);
   } else {
     logStatus(options, `cache: npm ${resolve(options.cacheRoot, "npm")}`);
   }
   const startedAt = new Date().toISOString();
-  const result = spawnSync(command[0], command.slice(1), {
-    cwd: process.cwd(),
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+  const result = await runDownloadProcess(command, lane, options);
   const run = {
     type: "download",
     lane,
     action: "ran",
-    exitCode: result.status,
+    exitCode: result.exitCode,
     startedAt,
-    ok: result.status === 0,
-    outputTail: output.split("\n").slice(-30).join("\n").trim(),
+    ok: result.exitCode === 0,
+    outputTail: result.outputTail,
   };
   logStatus(options, `download: ${lane} ${run.ok ? "passed" : `failed exit=${run.exitCode}`}`);
+  if (!run.ok && run.outputTail) {
+    logStatus(options, `download: ${lane}: output tail:\n${run.outputTail}`);
+  }
   return run;
 }
 
@@ -820,7 +937,7 @@ async function main() {
   logStatus(options, `clawlab: suites ${[...options.suites].join(", ") || "none"}`);
   logStatus(options, `clawlab: writing artifacts to ${relative(process.cwd(), outputDir)}`);
 
-  const preflightData = preflight(options);
+  const preflightData = preflight(options, profile);
   if (!options.suites.has("github")) {
     logStatus(options, "github: skipped (use --remote or --suite github to enable)");
   }
@@ -831,7 +948,7 @@ async function main() {
   const download = [];
   if (options.suites.has("download")) {
     for (const lane of profile.downloadLanes) {
-      download.push(runDownloadLane(lane, candidate, options));
+      download.push(await runDownloadLane(lane, candidate, options));
     }
   }
 
