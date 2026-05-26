@@ -30,9 +30,18 @@ clawlab beta --package openclaw@2026.5.26-beta.1 --profile full
 clawlab beta --ref release/2026.5.26 --profile smoke
 ```
 
-`clawlab` discovers the OpenClaw checkout from the current directory, common
-sibling checkout layouts, or `OPENCLAW_ROOT`. Crabpot is discovered similarly
-or through `CRABPOT_ROOT`.
+Normal use does not require OpenClaw or Crabpot checkouts. `clawlab` dispatches
+GitHub workflows through `gh`, installs candidate npm packages into temporary
+homes for smoke checks, and clones Crabpot into a temporary directory only when
+the downloadable Crabpot lane runs.
+
+Local checkouts are optional dev overrides for advanced local Crabbox/Crabpot
+lanes:
+
+```sh
+clawlab beta --package openclaw@beta --suite crabbox --repo /path/to/openclaw
+clawlab beta --package openclaw@beta --suite crabpot --crabpot /path/to/crabpot
+```
 
 ## Duplicate workflow control
 
@@ -49,9 +58,9 @@ when you explicitly want a fresh run.
 
 ## Profiles
 
-- `smoke`: focused package/Kova plus Crabbox doctor and Crabpot.
-- `standard`: umbrella release validation plus Crabbox doctor, Crabpot, and
-  upgrade-survivor.
+- `smoke`: focused package/Kova plus downloadable package smoke and Crabpot.
+- `standard`: umbrella release validation plus downloadable package smoke,
+  Crabpot, and package acceptance delegation.
 - `full`: full release profile plus prompt-pack smoke.
 
 ## Suites
@@ -60,7 +69,7 @@ Use `--suite` to limit work:
 
 ```sh
 clawlab beta --package openclaw@beta --suite github
-clawlab beta --package openclaw@beta --suite crabbox,crabpot
+clawlab beta --package openclaw@beta --suite download
 clawlab beta --package openclaw@beta --dry-run
 ```
 
@@ -70,5 +79,6 @@ Outputs are written under `.artifacts/clawlab-*` with:
 - `summary.md`
 - `prompt-pack.json`
 
-Crabbox lanes report the `tbx_...` or `cbx_...` id when the runner output
-includes one. GitHub lanes report the run URL when `gh` returns it.
+Downloadable lanes run from npm/GitHub downloads. Optional Crabbox lanes report
+the `tbx_...` or `cbx_...` id when the runner output includes one. GitHub lanes
+report the run URL when `gh` returns it.

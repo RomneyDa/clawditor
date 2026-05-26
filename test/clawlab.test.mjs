@@ -29,4 +29,23 @@ describe("clawlab cli", () => {
     assert.ok(summary.github.some((run) => run.workflow === "package-acceptance.yml"));
     assert.equal(summary.verdict, "DRY_RUN");
   });
+
+  it("builds a dry-run downloadable plan without a repo checkout", () => {
+    const output = execFileSync("node", [
+      "bin/clawlab.mjs",
+      "beta",
+      "--package",
+      "openclaw@beta",
+      "--profile",
+      "smoke",
+      "--suite",
+      "download",
+      "--dry-run",
+      "--json",
+    ], { encoding: "utf8" });
+    const summary = JSON.parse(output);
+    assert.equal(summary.preflight.openclawHead, "downloadable/github mode");
+    assert.ok(summary.download.some((run) => run.lane === "package-smoke"));
+    assert.equal(summary.verdict, "DRY_RUN");
+  });
 });

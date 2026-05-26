@@ -2,7 +2,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -16,7 +15,7 @@ const profiles = {
     packageAcceptanceProfile: "smoke",
     kovaProfile: "smoke",
     kovaRepeat: "1",
-    crabboxLanes: ["doctor", "crabpot"],
+    downloadLanes: ["package-smoke", "crabpot"],
   },
   standard: {
     releaseProfile: "beta",
@@ -24,7 +23,7 @@ const profiles = {
     packageAcceptanceProfile: "package",
     kovaProfile: "diagnostic",
     kovaRepeat: "3",
-    crabboxLanes: ["doctor", "crabpot", "upgrade"],
+    downloadLanes: ["package-smoke", "crabpot", "package-acceptance"],
   },
   full: {
     releaseProfile: "full",
@@ -32,7 +31,7 @@ const profiles = {
     packageAcceptanceProfile: "full",
     kovaProfile: "release",
     kovaRepeat: "3",
-    crabboxLanes: ["doctor", "crabpot", "upgrade", "prompt-pack"],
+    downloadLanes: ["package-smoke", "crabpot", "package-acceptance", "prompt-pack"],
   },
 };
 
@@ -43,10 +42,10 @@ function usage() {
 
 Options:
   --profile smoke|standard|full       Coverage profile (default: standard)
-  --repo <path>                       OpenClaw checkout (default: ../openclaw)
-  --crabpot <path>                    Crabpot checkout (default: ../crabpot)
+  --repo <path>                       Optional local OpenClaw checkout for dev-only local-crabbox lanes
+  --crabpot <path>                    Optional local Crabpot checkout for dev-only local-crabpot lanes
   --output <path>                     Artifact root (default: .artifacts)
-  --suite <names>                     Comma list: github,crabbox,crabpot,prompts
+  --suite <names>                     Comma list: github,download,crabbox,crabpot,prompts
   --github-mode umbrella|separate     Workflow strategy (default: umbrella)
   --force-workflows                   Start workflows even when active runs exist
   --no-dedupe                         Disable active-run dedupe checks
@@ -64,8 +63,8 @@ function parseArgs(argv) {
       command: argv[0] ?? "",
       help: true,
       profile: "standard",
-      openclawRoot: defaults.openclawRoot,
-      crabpotRoot: defaults.crabpotRoot,
+      openclawRoot: null,
+      crabpotRoot: null,
       outputRoot: defaults.outputRoot,
       githubMode: "umbrella",
       forceWorkflows: false,
@@ -73,15 +72,15 @@ function parseArgs(argv) {
       watch: false,
       dryRun: false,
       json: false,
-      suites: new Set(["github", "crabbox", "crabpot", "prompts"]),
+      suites: new Set(["github", "download", "prompts"]),
     };
   }
   const [command, ...rest] = argv;
   const options = {
     command,
     profile: "standard",
-    openclawRoot: defaults.openclawRoot,
-    crabpotRoot: defaults.crabpotRoot,
+    openclawRoot: null,
+    crabpotRoot: null,
     outputRoot: defaults.outputRoot,
     githubMode: "umbrella",
     forceWorkflows: false,
@@ -89,7 +88,7 @@ function parseArgs(argv) {
     watch: false,
     dryRun: false,
     json: false,
-    suites: new Set(["github", "crabbox", "crabpot", "prompts"]),
+    suites: new Set(["github", "download", "prompts"]),
   };
 
   for (let i = 0; i < rest.length; i += 1) {
@@ -124,56 +123,9 @@ function parseArgs(argv) {
 }
 
 function defaultPaths() {
-  const openclawRoot = resolveDefaultOpenclawRoot();
   return {
-    openclawRoot,
-    crabpotRoot: resolveDefaultCrabpotRoot(openclawRoot),
     outputRoot: resolve(process.cwd(), ".artifacts"),
   };
-}
-
-function resolveDefaultOpenclawRoot() {
-  if (process.env.OPENCLAW_ROOT) {
-    return resolve(process.env.OPENCLAW_ROOT);
-  }
-  const fromCwd = findRepoRoot(process.cwd(), "openclaw");
-  if (fromCwd) return fromCwd;
-
-  const candidates = [
-    resolve(process.cwd(), "openclaw"),
-    resolve(process.cwd(), "../openclaw"),
-    resolve(root, "../openclaw"),
-    resolve(homedir(), "Documents/code/openclaw/openclaw"),
-  ];
-  return candidates.find(isOpenclawRepo) ?? candidates[0];
-}
-
-function resolveDefaultCrabpotRoot(openclawRoot) {
-  if (process.env.CRABPOT_ROOT) {
-    return resolve(process.env.CRABPOT_ROOT);
-  }
-  const fromCwd = findRepoRoot(process.cwd(), "crabpot");
-  if (fromCwd) return fromCwd;
-
-  const candidates = [
-    resolve(openclawRoot, "../crabpot"),
-    resolve(process.cwd(), "crabpot"),
-    resolve(process.cwd(), "../crabpot"),
-    resolve(root, "../crabpot"),
-    resolve(homedir(), "Documents/code/openclaw/crabpot"),
-  ];
-  return candidates.find(isCrabpotRepo) ?? candidates[0];
-}
-
-function findRepoRoot(start, expectedName) {
-  let current = resolve(start);
-  while (true) {
-    if (expectedName === "openclaw" && isOpenclawRepo(current)) return current;
-    if (expectedName === "crabpot" && isCrabpotRepo(current)) return current;
-    const next = dirname(current);
-    if (next === current) return null;
-    current = next;
-  }
 }
 
 function isOpenclawRepo(path) {
@@ -227,31 +179,63 @@ function readJsonCommand(command, args, cwd) {
 
 function preflight(options) {
   const missing = [];
-  for (const command of ["node", "gh", "git"]) {
+  const required = ["node"];
+  if (options.suites.has("github")) required.push("gh");
+  if (options.suites.has("download")) required.push("npm", "npx");
+  if (options.suites.has("download") || options.suites.has("crabbox") || options.suites.has("crabpot")) {
+    required.push("git");
+  }
+  for (const command of required) {
     if (!commandExists(command)) missing.push(command);
   }
-  if (options.suites.has("crabbox") && !commandExists("pnpm")) {
-    missing.push("pnpm");
+  if (options.suites.has("crabbox")) {
+    if (!commandExists("pnpm")) missing.push("pnpm");
+    if (!options.openclawRoot) {
+      throw new Error("--suite crabbox requires --repo <local-openclaw-checkout>");
+    }
+    if (!isOpenclawRepo(options.openclawRoot)) {
+      throw new Error(`--repo is not an OpenClaw checkout: ${options.openclawRoot}`);
+    }
+  }
+  if (options.suites.has("crabpot")) {
+    if (!options.crabpotRoot) {
+      throw new Error("--suite crabpot requires --crabpot <local-crabpot-checkout>");
+    }
+    if (!isCrabpotRepo(options.crabpotRoot)) {
+      throw new Error(`--crabpot is not a Crabpot checkout: ${options.crabpotRoot}`);
+    }
   }
   if (missing.length > 0) {
     throw new Error(`missing required command(s): ${missing.join(", ")}`);
   }
 
+  const openclaw = options.openclawRoot
+    ? localGitInfo(options.openclawRoot)
+    : { status: "not required", head: "downloadable/github mode" };
+
+  return {
+    openclawStatus: openclaw.status,
+    openclawHead: openclaw.head,
+    openclawRoot: options.openclawRoot,
+    crabpotRoot: options.crabpotRoot,
+    crabboxWrapper: options.openclawRoot ? resolve(options.openclawRoot, "scripts/crabbox-wrapper.mjs") : null,
+  };
+}
+
+function localGitInfo(cwd) {
   const status = runSync("git", ["status", "-sb"], {
-    cwd: options.openclawRoot,
+    cwd,
     capture: true,
     allowFailure: true,
   });
   const head = runSync("git", ["rev-parse", "HEAD"], {
-    cwd: options.openclawRoot,
+    cwd,
     capture: true,
     allowFailure: true,
   });
-
   return {
-    openclawStatus: status.stdout.trim(),
-    openclawHead: head.stdout.trim(),
-    crabboxWrapper: resolve(options.openclawRoot, "scripts/crabbox-wrapper.mjs"),
+    status: status.stdout.trim(),
+    head: head.stdout.trim(),
   };
 }
 
@@ -452,10 +436,10 @@ function crabboxCommand(lane, candidate, options) {
   ].join(" && ");
 
   const commands = {
-    doctor: candidate.kind === "package"
+    "package-smoke": candidate.kind === "package"
       ? `echo CRABBOX_PHASE:doctor && ${packageDoctor}`
       : "echo CRABBOX_PHASE:doctor && corepack pnpm release:check",
-    upgrade: "echo CRABBOX_PHASE:upgrade && corepack pnpm test:docker:published-upgrade-survivor",
+    "package-acceptance": "echo CRABBOX_PHASE:upgrade && corepack pnpm test:docker:published-upgrade-survivor",
     crabpot: [
       "echo CRABBOX_PHASE:crabpot",
       "tmp=$(mktemp -d)",
@@ -496,6 +480,62 @@ function runCrabboxLane(lane, candidate, options) {
     exitCode: result.status,
     id: idMatch?.[0] ?? null,
     url: urlMatch?.[0] ?? null,
+    startedAt,
+    ok: result.status === 0,
+    outputTail: output.split("\n").slice(-30).join("\n").trim(),
+  };
+}
+
+function downloadableCommand(lane, candidate) {
+  const candidatePackage = candidate.kind === "package" ? candidate.label : "openclaw@beta";
+  const commands = {
+    "package-smoke": [
+      "tmp=$(mktemp -d)",
+      "export HOME=\"$tmp/home\"",
+      "export OPENCLAW_HOME=\"$tmp/openclaw\"",
+      "export OPENCLAW_STATE_DIR=\"$tmp/state\"",
+      `npm install -g ${quote(candidatePackage)}`,
+      "openclaw --version",
+      "openclaw doctor --non-interactive",
+    ].join(" && "),
+    crabpot: [
+      "tmp=$(mktemp -d)",
+      "git clone --depth 1 --branch crab-beta https://github.com/openclaw/crabpot.git \"$tmp/crabpot\"",
+      "cd \"$tmp/crabpot\"",
+      "npm install",
+      "npm run check",
+      "npm run plugin-inspector:smoke",
+    ].join(" && "),
+    "package-acceptance": [
+      "echo 'Package Acceptance runs through GitHub workflows; local downloadable lane records that workflow coverage is delegated.'",
+    ].join(" && "),
+    "prompt-pack": [
+      `npx -y -p ${quote(candidatePackage)} openclaw --version`,
+    ].join(" && "),
+  };
+  if (!commands[lane]) {
+    throw new Error(`unknown download lane: ${lane}`);
+  }
+  return ["bash", "-lc", commands[lane]];
+}
+
+function runDownloadLane(lane, candidate, options) {
+  const command = downloadableCommand(lane, candidate);
+  if (options.dryRun) {
+    return { type: "download", lane, action: "dry-run", command: command.join(" ") };
+  }
+  const startedAt = new Date().toISOString();
+  const result = spawnSync(command[0], command.slice(1), {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+  return {
+    type: "download",
+    lane,
+    action: "ran",
+    exitCode: result.status,
     startedAt,
     ok: result.status === 0,
     outputTail: output.split("\n").slice(-30).join("\n").trim(),
@@ -563,6 +603,9 @@ function writeSummary(outputDir, summary) {
     "## GitHub",
     ...summary.github.map((run) => `- ${run.workflow}: ${run.action}${run.id ? ` ${run.id}` : ""}${run.url ? ` ${run.url}` : ""}`),
     "",
+    "## Downloadable",
+    ...summary.download.map((run) => `- ${run.lane}: ${run.action}${run.exitCode !== undefined ? ` exit=${run.exitCode}` : ""}`),
+    "",
     "## Crabbox",
     ...summary.crabbox.map((run) => `- ${run.lane}: ${run.action}${run.id ? ` ${run.id}` : ""}${run.exitCode !== undefined ? ` exit=${run.exitCode}` : ""}${run.url ? ` ${run.url}` : ""}`),
     "",
@@ -577,10 +620,11 @@ function writeSummary(outputDir, summary) {
 }
 
 function verdictFor(summary) {
+  const failedDownload = summary.download.some((run) => run.exitCode !== undefined && run.exitCode !== 0);
   const failedCrabbox = summary.crabbox.some((run) => run.exitCode !== undefined && run.exitCode !== 0);
   const failedCrabpot = summary.crabpot && !summary.crabpot.ok;
-  if (failedCrabbox || failedCrabpot) return "FAIL";
-  const dry = [...summary.github, ...summary.crabbox].some((run) => run.action === "dry-run");
+  if (failedDownload || failedCrabbox || failedCrabpot) return "FAIL";
+  const dry = [...summary.github, ...summary.download, ...summary.crabbox].some((run) => run.action === "dry-run");
   if (dry) return "DRY_RUN";
   const reused = summary.github.some((run) => run.action === "reuse-active");
   return reused ? "INCOMPLETE_REUSED_ACTIVE_RUNS" : "STARTED";
@@ -658,9 +702,16 @@ async function main() {
     launchWorkflow(workflow, candidate, profile, options)
   );
 
+  const download = [];
+  if (options.suites.has("download")) {
+    for (const lane of profile.downloadLanes) {
+      download.push(runDownloadLane(lane, candidate, options));
+    }
+  }
+
   const crabbox = [];
   if (options.suites.has("crabbox")) {
-    for (const lane of profile.crabboxLanes) {
+    for (const lane of profile.downloadLanes) {
       crabbox.push(runCrabboxLane(lane, candidate, options));
     }
   }
@@ -675,6 +726,7 @@ async function main() {
     outputDir,
     preflight: preflightData,
     github,
+    download,
     crabbox,
     crabpot,
     prompts: prompts.map((prompt) => ({
