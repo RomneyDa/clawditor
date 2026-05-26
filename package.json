@@ -19,7 +19,7 @@
     "clawlab": "bin/clawlab.mjs"
   },
   "scripts": {
-    "beta": "node bin/clawlab.mjs beta",
+    "test-candidate": "node bin/clawlab.mjs test",
     "test": "node --test test/*.test.mjs"
   },
   "engines": {

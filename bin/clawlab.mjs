@@ -41,7 +41,6 @@ function usage() {
   return `Usage:
   clawlab test openclaw@beta [options]
   clawlab test --ref release/2026.5.26 [options]
-  clawlab beta --package openclaw@beta [options]
 
 Options:
   --profile smoke|standard|full       Coverage profile (default: standard)
@@ -108,7 +107,6 @@ function parseArgs(argv) {
     };
 
     if (arg === "--help" || arg === "-h") options.help = true;
-    else if (arg === "--package") options.packageSpec = next();
     else if (arg === "--ref") options.ref = next();
     else if (arg === "--profile") options.profile = next();
     else if (arg === "--repo") options.openclawRoot = resolve(next());
@@ -126,8 +124,13 @@ function parseArgs(argv) {
     else positional.push(arg);
   }
 
-  if (command === "test" && positional.length > 0 && !options.packageSpec && !options.ref) {
+  if (positional.length > 1) {
+    throw new Error(`unexpected argument: ${positional[1]}`);
+  }
+  if (positional.length > 0 && !options.ref) {
     options.packageSpec = positional[0];
+  } else if (positional.length > 0 && options.ref) {
+    throw new Error("choose either a package argument or --ref, not both");
   } else if (positional.length > 0) {
     throw new Error(`unexpected argument: ${positional[0]}`);
   }
@@ -253,9 +256,6 @@ function localGitInfo(cwd) {
 }
 
 function candidateFromOptions(options) {
-  if (options.packageSpec && options.ref) {
-    throw new Error("choose either --package or --ref, not both");
-  }
   if (options.packageSpec) {
     return {
       kind: "package",
@@ -272,7 +272,7 @@ function candidateFromOptions(options) {
       targetRef: options.ref,
     };
   }
-  throw new Error("missing candidate: pass --package openclaw@beta or --ref <branch/tag/sha>");
+  throw new Error("missing candidate: pass a package spec such as openclaw@beta or --ref <branch/tag/sha>");
 }
 
 function workflowInputs(workflow, candidate, profile) {
@@ -691,7 +691,7 @@ async function main() {
     process.stdout.write(usage());
     process.exit(0);
   }
-  if (!["test", "beta"].includes(options.command)) {
+  if (options.command !== "test") {
     process.stdout.write(usage());
     process.exit(1);
   }
