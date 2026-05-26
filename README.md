@@ -2,6 +2,56 @@
 
 One-command OpenClaw beta and release-candidate validation launcher.
 
+## How it works
+
+A `clawditor test <candidate>` run executes these stages in order. Default
+stages always run; the rest are opt-in via `--remote` or `--suite`.
+
+1. **Preflight** — verifies required commands (`node`, `npm`, `npx`, `git`,
+   plus `curl` for Kova, `git-lfs` for the Crabpot lane, `gh` for `--remote`,
+   `pnpm` for Crabbox) and resolves the candidate (`openclaw@beta`,
+   `openclaw@<version>`, or `--ref <branch/tag/sha>`).
+2. **GitHub Actions** *(opt-in: `--remote` or `--suite github`)* —
+   dispatches workflows on `openclaw/openclaw` via `gh`. The umbrella mode
+   triggers `full-release-validation.yml`; separate mode triggers
+   `package-acceptance.yml`, `plugin-prerelease.yml`, and
+   `openclaw-performance.yml`. Active runs are reused unless
+   `--force-workflows` / `--no-dedupe` is set.
+3. **Package/cache lanes** *(default)* — runs each lane from the active
+   profile against npm-published artifacts in temp `HOME` / `OPENCLAW_HOME`
+   sandboxes:
+   - `package-smoke` *(all profiles)*: `npm install -g` the candidate,
+     then `openclaw --version` and `openclaw doctor --non-interactive`.
+   - `cli-smoke` *(standard, full)*: install candidate and verify
+     `--help` output for `openclaw`, `doctor`, `config`, and `plugins`.
+   - `crabpot` *(standard, full)*: resolves the matching OpenClaw source
+     tag (`v<version>`), clones `openclaw/crabpot` (`crab-beta`) into the
+     cache, and runs `npm run check` and `npm run plugin-inspector:smoke`.
+   - `prompt-pack` *(full)*: `npx` the candidate to confirm it is
+     runnable from a remote install.
+4. **Kova** *(default)* — checks out a pinned revision of `openclaw/Kova`
+   into the cache, installs OCM (`shakkernerd/ocm`, pinned version) under
+   `<cache>/tools`, picks a target (`npm:<version>` for the smoke profile,
+   `local-build:<openclaw-checkout>` otherwise), then runs `kova matrix
+   plan` and `kova matrix run` against the `mock-provider` lane with the
+   profile's repeat count and scenario filters.
+5. **Crabbox** *(opt-in: `--suite crabbox --repo <openclaw-checkout>`)* —
+   re-runs the package/cache lanes inside a remote sandbox via
+   `scripts/crabbox-wrapper.mjs` (the `blacksmith-testbox` provider against
+   `openclaw/openclaw`'s `ci-check-testbox.yml`), producing a `tbx_…` /
+   `cbx_…` run id for off-machine proof.
+6. **Local Crabpot** *(opt-in: `--suite crabpot --crabpot <checkout>`)* —
+   dev-override that runs `npm run check` and `npm run plugin-inspector:smoke`
+   directly inside a local Crabpot working copy, bypassing the cached
+   clone.
+7. **Prompt pack** *(default)* — writes `prompt-pack.json` referencing the
+   bundled prompt presets under `prompts/`.
+8. **Summary** — writes `manifest.json` and `summary.md` under
+   `.artifacts/clawditor-*`, then prints the final verdict
+   (`LOCAL_PASS`, `LOCAL_FAIL`, `REMOTE_STARTED_LOCAL_PASS`,
+   `REMOTE_REUSED_LOCAL_PASS`, or `DRY_RUN`). With `--watch`, GitHub runs
+   are polled until they complete before the summary is finalized.
+
 ## Install
 
 From GitHub:
