@@ -216,6 +216,16 @@ function elapsedSeconds(startedMs) {
   return Math.max(0, Math.round((Date.now() - startedMs) / 1000));
 }
 
+function missingCommandError(missing) {
+  const lines = [`missing required command(s): ${missing.join(", ")}`];
+  if (missing.includes("git-lfs")) {
+    lines.push("git-lfs is required by the default Crabpot lane because some plugin fixtures use Git LFS-backed submodules.");
+    lines.push("On macOS with Homebrew: brew install git-lfs && git lfs install");
+    lines.push("To run the lighter local package smoke without Crabpot: clawlab test openclaw@beta --profile smoke");
+  }
+  return lines.join("\n");
+}
+
 function readJsonCommand(command, args, cwd) {
   const result = runSync(command, args, { cwd, capture: true, allowFailure: true });
   if (result.status !== 0) return null;
@@ -260,7 +270,7 @@ function preflight(options, profile) {
     }
   }
   if (missing.length > 0) {
-    throw new Error(`missing required command(s): ${missing.join(", ")}`);
+    throw new Error(missingCommandError(missing));
   }
 
   const openclaw = options.openclawRoot
@@ -598,15 +608,14 @@ else
   mkdir -p "$(dirname "$openclaw_repo")"
   git clone --depth 1 https://github.com/openclaw/openclaw.git "$openclaw_repo"
 fi
-${stepCommand("checkout OpenClaw source")}
+printf 'CLAWLAB_STEP:using OpenClaw source ref %s\\n' "$openclaw_ref" >&2
 if git -C "$openclaw_repo" fetch --depth 1 origin "$openclaw_ref"; then
+  ${stepCommand("checkout OpenClaw source")}
   git -C "$openclaw_repo" checkout -q FETCH_HEAD
   git -C "$openclaw_repo" reset --hard -q FETCH_HEAD
 else
-  ${stepCommand("source tag unavailable; fallback to main")}
-  git -C "$openclaw_repo" fetch --depth 1 origin main
-  git -C "$openclaw_repo" checkout -q FETCH_HEAD
-  git -C "$openclaw_repo" reset --hard -q FETCH_HEAD
+  printf 'CLAWLAB_STEP:WARN OpenClaw source ref %s was not found\\n' "$openclaw_ref" >&2
+  exit 1
 fi`;
   const crabpotSync = `repo=${quote(crabpotCache)}
 if [ -d "$repo/.git" ]; then
@@ -699,7 +708,11 @@ function runDownloadProcess(command, lane, options) {
     const rememberLine = (line) => {
       if (line.startsWith("CLAWLAB_STEP:")) {
         currentStep = line.slice("CLAWLAB_STEP:".length).trim();
-        logStatus(options, `download: ${lane}: running ${currentStep}`);
+        if (currentStep.startsWith("WARN ")) {
+          logStatus(options, `download: ${lane}: ${currentStep}`);
+        } else {
+          logStatus(options, `download: ${lane}: running ${currentStep}`);
+        }
         return;
       }
       lines.push(line);

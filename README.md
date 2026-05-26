@@ -43,6 +43,11 @@ Normal use is local-first and does not require OpenClaw or Crabpot checkouts.
 and uses reusable cached source checkouts only when the downloadable Crabpot lane
 runs.
 
+For package candidates such as `openclaw@beta`, the Crabpot lane resolves the
+published package version and checks out the matching OpenClaw source tag
+(`v<version>`). If that source ref is missing, the lane fails instead of testing
+against an unrelated checkout.
+
 Downloads are cached in the OS cache directory by default:
 
 ```text
