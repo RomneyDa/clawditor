@@ -28,7 +28,7 @@ describe("clawlab cli", () => {
     assert.equal(summary.verdict, "DRY_RUN");
   });
 
-  it("builds a dry-run downloadable plan without a repo checkout", () => {
+  it("builds a dry-run package/cache plan without a repo checkout", () => {
     const output = execFileSync("node", [
       "bin/clawlab.mjs",
       "test",
@@ -39,7 +39,7 @@ describe("clawlab cli", () => {
       "--json",
     ], { encoding: "utf8" });
     const summary = JSON.parse(output);
-    assert.equal(summary.preflight.openclawHead, "downloadable/github mode");
+    assert.equal(summary.preflight.openclawHead, "local package/cache mode");
     assert.equal(summary.github.length, 0);
     assert.ok(summary.download.some((run) => run.lane === "package-smoke"));
     assert.equal(summary.verdict, "DRY_RUN");

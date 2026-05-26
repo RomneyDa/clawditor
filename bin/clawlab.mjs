@@ -344,7 +344,7 @@ function preflight(options, profile) {
 
   const openclaw = options.openclawRoot
     ? localGitInfo(options.openclawRoot)
-    : { status: "not required", head: "downloadable/github mode" };
+    : { status: "not required", head: "local package/cache mode" };
 
   const result = {
     openclawStatus: openclaw.status,
@@ -673,7 +673,7 @@ git -C "$${repoVar}" checkout -q FETCH_HEAD
 git -C "$${repoVar}" reset --hard -q FETCH_HEAD`;
 }
 
-function downloadableCommand(lane, candidate, options) {
+function downloadCommand(lane, candidate, options) {
   const candidatePackage = candidate.kind === "package" ? candidate.label : "openclaw@beta";
   const npmCache = resolve(options.cacheRoot, "npm");
   const crabpotCache = resolve(options.cacheRoot, "repos/crabpot");
@@ -847,12 +847,12 @@ function runLiveProcess(command, prefix, options, opts = {}) {
 }
 
 async function runDownloadLane(lane, candidate, options) {
-  const command = downloadableCommand(lane, candidate, options);
+  const command = downloadCommand(lane, candidate, options);
   if (options.dryRun) {
-    logStatus(options, `download: dry-run ${lane} - ${downloadLaneDescriptions[lane] ?? "run downloadable lane"}`);
+    logStatus(options, `download: dry-run ${lane} - ${downloadLaneDescriptions[lane] ?? "run package/cache lane"}`);
     return { type: "download", lane, action: "dry-run", command: command.join(" ") };
   }
-  logStatus(options, `download: running ${lane} - ${downloadLaneDescriptions[lane] ?? "run downloadable lane"}`);
+  logStatus(options, `download: running ${lane} - ${downloadLaneDescriptions[lane] ?? "run package/cache lane"}`);
   if (lane === "crabpot") {
     logStatus(options, `cache: crabpot repo ${resolve(options.cacheRoot, "repos/crabpot")}`);
     logStatus(options, `cache: openclaw source ${resolve(options.cacheRoot, "repos/openclaw")}`);
@@ -1146,7 +1146,7 @@ function downloadSummaryLines(run) {
     `### ${run.lane}`,
     "",
     `- status: ${statusText(run)}`,
-    `- purpose: ${downloadLaneDescriptions[run.lane] ?? "downloadable lane"}`,
+    `- purpose: ${downloadLaneDescriptions[run.lane] ?? "package/cache lane"}`,
     `- started: ${run.startedAt ?? "not started"}`,
   ];
   if (run.command) lines.push(`- command: \`${run.command}\``);
@@ -1205,12 +1205,6 @@ function kovaSummaryLines(run) {
 }
 
 function localCrabpotSummaryLines(crabpot) {
-  if (!crabpot) {
-    return [
-      "- skipped: local Crabpot suite was not selected. The default standard profile runs Crabpot through the downloadable lane above.",
-      "",
-    ];
-  }
   const lines = [`- status: ${crabpot.ok ? "pass" : "fail"}`, ""];
   for (const result of crabpot.results) {
     lines.push(`### ${result.command}`, "", `- status: ${statusText(result)}`);
@@ -1225,6 +1219,29 @@ function localCrabpotSummaryLines(crabpot) {
   return lines;
 }
 
+function notRunLines(summary) {
+  const lines = [];
+  if (summary.github.length === 0) {
+    lines.push("- GitHub: remote workflows were not selected. Use `--remote` or `--suite github` to enable.");
+  }
+  if (summary.download.length === 0) {
+    lines.push("- Package/cache lanes: not selected.");
+  }
+  if (!summary.kova) {
+    lines.push("- Kova: not selected.");
+  }
+  if (summary.crabbox.length === 0) {
+    lines.push("- Crabbox: not selected. Use `--suite crabbox --repo <local-openclaw-checkout>` for remote Testbox proof.");
+  }
+  if (!summary.crabpot) {
+    lines.push("- Dev Crabpot checkout: not selected. The default standard profile runs Crabpot through the package/cache lane.");
+  }
+  if (summary.prompts.length === 0) {
+    lines.push("- Prompt pack: not selected.");
+  }
+  return lines.length > 0 ? ["## Not Run", ...lines, ""] : [];
+}
+
 function writeSummary(outputDir, summary) {
   writeFileSync(resolve(outputDir, "manifest.json"), `${JSON.stringify(summary, null, 2)}\n`);
   const lines = [
@@ -1237,32 +1254,21 @@ function writeSummary(outputDir, summary) {
     `- artifacts: ${relative(process.cwd(), outputDir)}`,
     `- cache: ${summary.preflight.cacheRoot}`,
     "",
-    "## GitHub",
     ...(summary.github.length > 0
-      ? summary.github.map((run) => `- ${run.workflow}: ${run.action}${run.id ? ` ${run.id}` : ""}${run.url ? ` ${run.url}` : ""}`)
-      : ["- skipped: remote GitHub workflows were not selected. Use `--remote` or `--suite github` to enable."]),
-    "",
-    "## Downloadable",
+      ? ["## GitHub", ...summary.github.map((run) => `- ${run.workflow}: ${run.action}${run.id ? ` ${run.id}` : ""}${run.url ? ` ${run.url}` : ""}`), ""]
+      : []),
     ...(summary.download.length > 0
-      ? summary.download.flatMap((run) => downloadSummaryLines(run))
-      : ["- skipped: downloadable lanes were not selected.", ""]),
-    "",
-    "## Kova",
-    ...kovaSummaryLines(summary.kova),
-    "",
-    "## Crabbox",
+      ? ["## Package/Cache Lanes", ...summary.download.flatMap((run) => downloadSummaryLines(run))]
+      : []),
+    ...(summary.kova ? ["## Kova", ...kovaSummaryLines(summary.kova)] : []),
     ...(summary.crabbox.length > 0
-      ? summary.crabbox.flatMap((run) => crabboxSummaryLines(run))
-      : ["- skipped: Crabbox was not selected. Use `--suite crabbox --repo <local-openclaw-checkout>` to enable remote Testbox proof.", ""]),
-    "",
-    "## Local Crabpot",
-    ...localCrabpotSummaryLines(summary.crabpot),
-    "",
-    "## Prompts",
+      ? ["## Crabbox", ...summary.crabbox.flatMap((run) => crabboxSummaryLines(run))]
+      : []),
+    ...(summary.crabpot ? ["## Dev Crabpot Checkout", ...localCrabpotSummaryLines(summary.crabpot)] : []),
     ...(summary.prompts.length > 0
-      ? summary.prompts.map((prompt) => `- ${prompt.name} (${prompt.path})`)
-      : ["- skipped: prompt manifest generation was not selected."]),
-    "",
+      ? ["## Prompts", ...summary.prompts.map((prompt) => `- ${prompt.name} (${prompt.path})`), ""]
+      : []),
+    ...notRunLines(summary),
     "## Files",
     "- `manifest.json`: full structured result data",
     "- `summary.md`: this review summary",

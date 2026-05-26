@@ -41,8 +41,7 @@ Requirements:
 
 Normal use is local-first and does not require OpenClaw or Crabpot checkouts.
 `clawlab` installs candidate npm packages into temporary homes for smoke checks
-and uses reusable cached source checkouts only when the downloadable Crabpot lane
-runs.
+and uses reusable cached source checkouts only when the Crabpot lane runs.
 
 The default path also runs Kova locally against the candidate package using the
 mock-provider performance lane. For package candidates such as `openclaw@beta`,
@@ -140,6 +139,6 @@ Outputs are written under `.artifacts/clawlab-*` with:
 - `summary.md`
 - `prompt-pack.json`
 
-Downloadable lanes run from npm/GitHub downloads. Optional Crabbox lanes report
+Package/cache lanes run from npm/GitHub downloads. Optional Crabbox lanes report
 the `tbx_...` or `cbx_...` id when the runner output includes one. GitHub lanes
 report the run URL when `gh` returns it.
