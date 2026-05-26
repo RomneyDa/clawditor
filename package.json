@@ -24,7 +24,8 @@
     "build": "tsc",
     "postbuild": "node -e \"require('node:fs').chmodSync('dist/clawditor.js', 0o755)\"",
     "test": "npm run build && node --test --import tsx test/*.test.ts",
-    "prepack": "npm run build"
+    "prepack": "npm run build",
+    "prepare": "node -e \"try{require('node:fs').chmodSync('dist/clawditor.js',0o755)}catch{}\""
   },
   "engines": {
     "node": ">=22"
