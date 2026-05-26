@@ -24,7 +24,8 @@
     "build": "tsc",
     "postbuild": "node -e \"require('node:fs').chmodSync('dist/clawlab.js', 0o755)\"",
     "test": "npm run build && node --test --import tsx test/*.test.ts",
-    "prepare": "npm run build"
+    "prepack": "npm run build",
+    "prepare": "node -e \"require('node:fs').chmodSync('dist/clawlab.js', 0o755)\""
   },
   "engines": {
     "node": ">=22"
