@@ -51,7 +51,7 @@ const profiles = {
         downloadLanes: ["package-smoke", "cli-smoke", "crabpot", "prompt-pack"],
     },
 };
-const defaultSuites = new Set(["download", "kova", "prompts"]);
+const defaultSuites = new Set(["download", "kova", "crabbox", "crabpot", "prompts"]);
 function usage() {
     return `Usage:
   clawditor test openclaw@beta [options]
@@ -59,8 +59,8 @@ function usage() {
 
 Options:
   --profile smoke|standard|full       Coverage profile (default: standard)
-  --repo <path>                       Optional local OpenClaw checkout for dev-only local-crabbox lanes
-  --crabpot <path>                    Optional local Crabpot checkout for dev-only local-crabpot lanes
+  --repo <path>                       Local OpenClaw checkout (default: cached openclaw/main clone)
+  --crabpot <path>                    Local Crabpot checkout (default: cached crabpot/crab-beta clone)
   --output <path>                     Artifact root (default: .artifacts)
   --cache <path>                      Cache root (default: OS cache dir)
   --suite <names>                     Comma list: github,download,kova,crabbox,crabpot,prompts
@@ -198,6 +198,33 @@ function isCrabpotRepo(path) {
         existsSync(resolve(path, "crabpot.config.json")) &&
         existsSync(resolve(path, "scripts/run-static-suite.mjs"));
 }
+function syncGitCheckout(path, repoUrl, ref, label, options) {
+    mkdirSync(dirname(path), { recursive: true });
+    if (existsSync(resolve(path, ".git"))) {
+        logStatus(options, `preflight: refreshing cached ${label} (${ref})`);
+        runSync("git", ["-C", path, "fetch", "--depth", "1", "origin", ref]);
+        runSync("git", ["-C", path, "checkout", "-q", "FETCH_HEAD"]);
+        runSync("git", ["-C", path, "reset", "--hard", "-q", "FETCH_HEAD"]);
+    }
+    else {
+        logStatus(options, `preflight: cloning ${label} (${ref}) into cache`);
+        runSync("git", ["clone", "--depth", "1", "--branch", ref, repoUrl, path]);
+    }
+}
+function ensureCachedOpenclawCheckout(options) {
+    const path = resolve(options.cacheRoot, "repos/openclaw-suite");
+    if (options.dryRun)
+        return path;
+    syncGitCheckout(path, "https://github.com/openclaw/openclaw.git", "main", "OpenClaw", options);
+    return path;
+}
+function ensureCachedCrabpotCheckout(options) {
+    const path = resolve(options.cacheRoot, "repos/crabpot-suite");
+    if (options.dryRun)
+        return path;
+    syncGitCheckout(path, "https://github.com/openclaw/crabpot.git", "crab-beta", "Crabpot", options);
+    return path;
+}
 function runSync(command, args, opts = {}) {
     const result = spawnSync(command, args, {
         cwd: opts.cwd,
@@ -310,35 +337,43 @@ function preflight(options, profile) {
     if (!options.dryRun && options.suites.has("kova")) {
         required.push("curl");
     }
-    if (!options.dryRun && options.suites.has("download") && profile.downloadLanes.includes("crabpot")) {
+    if (!options.dryRun && ((options.suites.has("download") && profile.downloadLanes.includes("crabpot")) ||
+        options.suites.has("crabpot"))) {
         required.push("git-lfs");
+    }
+    if (!options.dryRun && options.suites.has("crabbox")) {
+        required.push("pnpm");
     }
     for (const command of required) {
         if (!commandExists(command))
             missing.push(command);
     }
+    if (missing.length > 0) {
+        throw new Error(missingCommandError(missing));
+    }
     if (options.suites.has("crabbox")) {
-        if (!commandExists("pnpm"))
-            missing.push("pnpm");
         if (!options.openclawRoot) {
-            throw new Error("--suite crabbox requires --repo <local-openclaw-checkout>");
+            options.openclawRoot = ensureCachedOpenclawCheckout(options);
         }
-        if (!isOpenclawRepo(options.openclawRoot)) {
+        else if (!isOpenclawRepo(options.openclawRoot)) {
             throw new Error(`--repo is not an OpenClaw checkout: ${options.openclawRoot}`);
+        }
+        if (!options.dryRun && !isOpenclawRepo(options.openclawRoot)) {
+            throw new Error(`OpenClaw checkout at ${options.openclawRoot} is missing expected files`);
         }
     }
     if (options.suites.has("crabpot")) {
         if (!options.crabpotRoot) {
-            throw new Error("--suite crabpot requires --crabpot <local-crabpot-checkout>");
+            options.crabpotRoot = ensureCachedCrabpotCheckout(options);
         }
-        if (!isCrabpotRepo(options.crabpotRoot)) {
+        else if (!isCrabpotRepo(options.crabpotRoot)) {
             throw new Error(`--crabpot is not a Crabpot checkout: ${options.crabpotRoot}`);
         }
+        if (!options.dryRun && !isCrabpotRepo(options.crabpotRoot)) {
+            throw new Error(`Crabpot checkout at ${options.crabpotRoot} is missing expected files`);
+        }
     }
-    if (missing.length > 0) {
-        throw new Error(missingCommandError(missing));
-    }
-    const openclaw = options.openclawRoot
+    const openclaw = options.openclawRoot && existsSync(resolve(options.openclawRoot, ".git"))
         ? localGitInfo(options.openclawRoot)
         : { status: "not required", head: "local package/cache mode" };
     const result = {
@@ -1224,10 +1259,10 @@ function notRunLines(summary) {
         lines.push("- Kova: not selected.");
     }
     if (summary.crabbox.length === 0) {
-        lines.push("- Crabbox: not selected. Use `--suite crabbox --repo <local-openclaw-checkout>` for remote Testbox proof.");
+        lines.push("- Crabbox: not selected. Add `crabbox` back to `--suite` (and optionally pass `--repo <local-openclaw-checkout>`) to re-enable.");
     }
     if (!summary.crabpot) {
-        lines.push("- Dev Crabpot checkout: not selected. The default standard profile runs Crabpot through the package/cache lane.");
+        lines.push("- Crabpot suite: not selected. Add `crabpot` back to `--suite` (and optionally pass `--crabpot <local-crabpot-checkout>`) to re-enable.");
     }
     if (summary.prompts.length === 0) {
         lines.push("- Prompt pack: not selected.");
@@ -1256,7 +1291,7 @@ function writeSummary(outputDir, summary) {
         ...(summary.crabbox.length > 0
             ? ["## Crabbox", ...summary.crabbox.flatMap((run) => crabboxSummaryLines(run))]
             : []),
-        ...(summary.crabpot ? ["## Dev Crabpot Checkout", ...localCrabpotSummaryLines(summary.crabpot)] : []),
+        ...(summary.crabpot ? ["## Crabpot", ...localCrabpotSummaryLines(summary.crabpot)] : []),
         ...(summary.prompts.length > 0
             ? ["## Prompts", ...summary.prompts.map((prompt) => `- ${prompt.name} (${prompt.path})`), ""]
             : []),

@@ -62,6 +62,22 @@ describe("clawditor cli", () => {
     assert.equal(summary.github.length, 0);
   });
 
+  it("includes crabbox and crabpot in the default suites using cached checkouts", () => {
+    const output = execFileSync("node", [
+      "dist/clawditor.js",
+      "test",
+      "openclaw@beta",
+      "--dry-run",
+      "--json",
+    ], { encoding: "utf8" });
+    const summary = JSON.parse(output);
+    assert.ok(summary.crabbox.length > 0, "crabbox suite ran by default");
+    assert.ok(summary.crabbox.every((run) => run.action === "dry-run"));
+    assert.ok(summary.crabpot, "crabpot suite ran by default");
+    assert.ok(summary.crabbox[0].command.includes("/repos/openclaw-suite/"));
+    assert.equal(summary.verdict, "DRY_RUN");
+  });
+
   it("uses a local-build Kova target for the default diagnostic profile", () => {
     const output = execFileSync("node", [
       "dist/clawditor.js",

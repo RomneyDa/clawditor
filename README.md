@@ -8,9 +8,13 @@ A `clawditor test <candidate>` run executes these stages in order. Default
 stages always run; the rest are opt-in via `--remote` or `--suite`.
 
 1. **Preflight** — verifies required commands (`node`, `npm`, `npx`, `git`,
-   plus `curl` for Kova, `git-lfs` for the Crabpot lane, `gh` for `--remote`,
-   `pnpm` for Crabbox) and resolves the candidate (`openclaw@beta`,
-   `openclaw@<version>`, or `--ref <branch/tag/sha>`).
+   plus `curl` for Kova, `git-lfs` and `pnpm` for the default Crabpot and
+   Crabbox suites, `gh` for `--remote`) and resolves the candidate
+   (`openclaw@beta`, `openclaw@<version>`, or `--ref <branch/tag/sha>`).
+   When `--repo` / `--crabpot` are omitted, Clawditor clones (or refreshes)
+   `openclaw/openclaw@main` into `<cache>/repos/openclaw-suite` and
+   `openclaw/crabpot@crab-beta` into `<cache>/repos/crabpot-suite` so the
+   default Crabbox and Crabpot suites can run without any local checkouts.
 2. **GitHub Actions** *(opt-in: `--remote` or `--suite github`)* —
    dispatches workflows on `openclaw/openclaw` via `gh`. The umbrella mode
    triggers `full-release-validation.yml`; separate mode triggers
@@ -35,15 +39,17 @@ stages always run; the rest are opt-in via `--remote` or `--suite`.
    `local-build:<openclaw-checkout>` otherwise), then runs `kova matrix
    plan` and `kova matrix run` against the `mock-provider` lane with the
    profile's repeat count and scenario filters.
-5. **Crabbox** *(opt-in: `--suite crabbox --repo <openclaw-checkout>`)* —
-   re-runs the package/cache lanes inside a remote sandbox via
-   `scripts/crabbox-wrapper.mjs` (the `blacksmith-testbox` provider against
-   `openclaw/openclaw`'s `ci-check-testbox.yml`), producing a `tbx_…` /
-   `cbx_…` run id for off-machine proof.
-6. **Local Crabpot** *(opt-in: `--suite crabpot --crabpot <checkout>`)* —
-   dev-override that runs `npm run check` and `npm run plugin-inspector:smoke`
-   directly inside a local Crabpot working copy, bypassing the cached
-   clone.
+5. **Crabbox** *(default)* — re-runs the package/cache lanes inside a
+   remote sandbox via `scripts/crabbox-wrapper.mjs` (the
+   `blacksmith-testbox` provider against `openclaw/openclaw`'s
+   `ci-check-testbox.yml`), producing a `tbx_…` / `cbx_…` run id for
+   off-machine proof. By default this uses the cached
+   `openclaw/openclaw@main` checkout; pass `--repo <openclaw-checkout>`
+   to point at a local dev checkout instead.
+6. **Crabpot** *(default)* — runs `npm run check` and
+   `npm run plugin-inspector:smoke` inside a Crabpot working copy. By
+   default this uses the cached `openclaw/crabpot@crab-beta` checkout;
+   pass `--crabpot <checkout>` to point at a local dev checkout instead.
 7. **Prompt pack** *(default)* — writes `prompt-pack.json` referencing the
    bundled prompt presets under `prompts/`.
 8. **Summary** — writes `manifest.json` and `summary.md` under
@@ -108,10 +114,14 @@ Requirements:
 - curl for the default Kova lane, which installs cached OCM tooling
 - git-lfs for the default `standard` and `full` profiles, because Crabpot syncs
   plugin fixtures that include Git LFS-backed submodules
+- pnpm for the default Crabbox suite, which the OpenClaw checkout's
+  `scripts/crabbox-wrapper.mjs` shells out to
 
-Normal use is local-first and does not require OpenClaw or Crabpot checkouts.
-`clawditor` installs candidate npm packages into temporary homes for smoke checks
-and uses reusable cached source checkouts only when the Crabpot lane runs.
+Normal use is local-first and does not require providing OpenClaw or Crabpot
+checkouts. `clawditor` installs candidate npm packages into temporary homes for
+smoke checks and uses cached source checkouts (cloned on first run, refreshed on
+subsequent runs) for the Crabpot lane, the default Crabbox suite, and the
+default Crabpot suite.
 
 The default path also runs Kova locally through the mock-provider performance
 lane. For package candidates such as `openclaw@beta`, Clawditor resolves the
@@ -145,9 +155,11 @@ checkouts, Kova, and OCM tooling:
 clawditor/
   npm/
   repos/
-    crabpot/
+    crabpot/         # download crabpot lane (matching v<version> ref)
+    crabpot-suite/   # default Crabpot suite (crab-beta)
     kova/
-    openclaw/
+    openclaw/        # download crabpot lane (matching v<version> ref)
+    openclaw-suite/  # default Crabbox suite (main)
   tools/
 ```
 
@@ -163,12 +175,12 @@ GitHub Actions are opt-in:
 clawditor test openclaw@beta --remote
 ```
 
-Local checkouts are optional dev overrides for advanced local Crabbox/Crabpot
-lanes:
+The Crabbox and Crabpot suites run by default against cached checkouts. Point
+either suite at a local dev checkout instead with:
 
 ```sh
-clawditor test openclaw@beta --suite crabbox --repo /path/to/openclaw
-clawditor test openclaw@beta --suite crabpot --crabpot /path/to/crabpot
+clawditor test openclaw@beta --repo /path/to/openclaw
+clawditor test openclaw@beta --crabpot /path/to/crabpot
 ```
 
 ## Duplicate workflow control
@@ -189,19 +201,21 @@ when you explicitly want a fresh run.
 
 - `smoke`: fastest meaningful local package install, version, and doctor check.
 - `standard`: default. Runs package install/doctor, CLI bootstrap help checks,
-  Kova mock-provider performance, and Crabpot/plugin-inspector compatibility
-  from downloads.
+  Kova mock-provider performance, Crabpot/plugin-inspector compatibility from
+  downloads, and the default Crabbox + Crabpot suites against cached checkouts.
 - `full`: standard local checks plus prompt-pack smoke. With `--remote`, it
   asks GitHub for the broader full release profile.
 
 ## Suites
 
-Use `--suite` to limit work:
+Default suites: `download,kova,crabbox,crabpot,prompts`. Use `--suite` with a
+comma-separated list to limit work:
 
 ```sh
 clawditor test openclaw@beta --suite github
 clawditor test openclaw@beta --suite download
 clawditor test openclaw@beta --suite kova
+clawditor test openclaw@beta --suite download,kova,prompts   # skip crabbox/crabpot
 clawditor test openclaw@beta --dry-run
 ```
 
