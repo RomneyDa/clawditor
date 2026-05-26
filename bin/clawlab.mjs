@@ -216,6 +216,12 @@ function elapsedSeconds(startedMs) {
   return Math.max(0, Math.round((Date.now() - startedMs) / 1000));
 }
 
+function streamProcessOutput(options, prefix, line) {
+  if (!options.json) {
+    process.stdout.write(`${prefix}: > ${line}\n`);
+  }
+}
+
 function missingCommandError(missing) {
   const lines = [`missing required command(s): ${missing.join(", ")}`];
   if (missing.includes("git-lfs")) {
@@ -545,10 +551,10 @@ function crabboxCommand(lane, candidate, options) {
     ].join(" && "),
   };
 
-  return [...base, "bash", "-lc", commands[lane]];
+  return [...base, "bash", "--noprofile", "--norc", "-c", commands[lane]];
 }
 
-function runCrabboxLane(lane, candidate, options) {
+async function runCrabboxLane(lane, candidate, options) {
   const command = crabboxCommand(lane, candidate, options);
   if (options.dryRun) {
     logStatus(options, `crabbox: dry-run ${lane}`);
@@ -556,26 +562,27 @@ function runCrabboxLane(lane, candidate, options) {
   }
   logStatus(options, `crabbox: running ${lane}`);
   const startedAt = new Date().toISOString();
-  const result = spawnSync(command[0], command.slice(1), {
+  const result = await runLiveProcess(command, `crabbox: ${lane}`, options, {
     cwd: options.openclawRoot,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
   });
-  const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+  const output = result.output;
   const idMatch = output.match(/\b(?:tbx|cbx)_[A-Za-z0-9_-]+\b/u);
   const urlMatch = output.match(/https:\/\/github\.com\/openclaw\/openclaw\/actions\/runs\/[0-9]+/u);
   const run = {
     type: "crabbox",
     lane,
     action: "ran",
-    exitCode: result.status,
+    exitCode: result.exitCode,
     id: idMatch?.[0] ?? null,
     url: urlMatch?.[0] ?? null,
     startedAt,
-    ok: result.status === 0,
-    outputTail: output.split("\n").slice(-30).join("\n").trim(),
+    ok: result.exitCode === 0,
+    outputTail: result.outputTail,
   };
   logStatus(options, `crabbox: ${lane} ${run.ok ? "passed" : `failed exit=${run.exitCode}`}${run.id ? ` (${run.id})` : ""}`);
+  if (!run.ok && run.outputTail) {
+    logStatus(options, `crabbox: ${lane}: output tail:\n${run.outputTail}`);
+  }
   return run;
 }
 
@@ -690,14 +697,14 @@ cd "$repo"`;
   if (!commands[lane]) {
     throw new Error(`unknown download lane: ${lane}`);
   }
-  return ["bash", "-lc", commands[lane]];
+  return ["bash", "--noprofile", "--norc", "-c", commands[lane]];
 }
 
-function runDownloadProcess(command, lane, options) {
+function runLiveProcess(command, prefix, options, opts = {}) {
   return new Promise((resolveRun) => {
     const startedMs = Date.now();
     const child = spawn(command[0], command.slice(1), {
-      cwd: process.cwd(),
+      cwd: opts.cwd ?? process.cwd(),
       stdio: ["ignore", "pipe", "pipe"],
     });
     const lines = [];
@@ -709,9 +716,9 @@ function runDownloadProcess(command, lane, options) {
       if (line.startsWith("CLAWLAB_STEP:")) {
         currentStep = line.slice("CLAWLAB_STEP:".length).trim();
         if (currentStep.startsWith("WARN ")) {
-          logStatus(options, `download: ${lane}: ${currentStep}`);
+          logStatus(options, `${prefix}: ${currentStep}`);
         } else {
-          logStatus(options, `download: ${lane}: running ${currentStep}`);
+          logStatus(options, `${prefix}: running ${currentStep}`);
         }
         return;
       }
@@ -719,6 +726,7 @@ function runDownloadProcess(command, lane, options) {
       if (lines.length > 200) {
         lines.splice(0, lines.length - 200);
       }
+      streamProcessOutput(options, prefix, line);
     };
 
     const rememberChunk = (chunk) => {
@@ -738,8 +746,8 @@ function runDownloadProcess(command, lane, options) {
     });
 
     const heartbeat = setInterval(() => {
-      logStatus(options, `download: ${lane}: still running ${currentStep} (${elapsedSeconds(startedMs)}s)`);
-    }, 15000);
+      logStatus(options, `${prefix}: still running ${currentStep} (${elapsedSeconds(startedMs)}s)`);
+    }, opts.heartbeatMs ?? 15000);
 
     child.on("close", (code) => {
       clearInterval(heartbeat);
@@ -748,6 +756,7 @@ function runDownloadProcess(command, lane, options) {
       }
       resolveRun({
         exitCode: code ?? (spawnError ? 1 : 0),
+        output: lines.join("\n").trim(),
         outputTail: lines.slice(-30).join("\n").trim(),
       });
     });
@@ -768,7 +777,7 @@ async function runDownloadLane(lane, candidate, options) {
     logStatus(options, `cache: npm ${resolve(options.cacheRoot, "npm")}`);
   }
   const startedAt = new Date().toISOString();
-  const result = await runDownloadProcess(command, lane, options);
+  const result = await runLiveProcess(command, `download: ${lane}`, options);
   const run = {
     type: "download",
     lane,
@@ -785,7 +794,7 @@ async function runDownloadLane(lane, candidate, options) {
   return run;
 }
 
-function runLocalCrabpot(candidate, options) {
+async function runLocalCrabpot(candidate, options) {
   if (!options.suites.has("crabpot")) return null;
   const commands = [
     ["npm", ["run", "check"]],
@@ -799,18 +808,19 @@ function runLocalCrabpot(candidate, options) {
       continue;
     }
     logStatus(options, `crabpot: running ${cmd} ${args.join(" ")}`);
-    const result = spawnSync(cmd, args, {
+    const result = await runLiveProcess([cmd, ...args], `crabpot: ${cmd} ${args.join(" ")}`, options, {
       cwd: options.crabpotRoot,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
     });
     results.push({
       command: [cmd, ...args].join(" "),
-      exitCode: result.status,
-      ok: result.status === 0,
-      outputTail: `${result.stdout ?? ""}${result.stderr ?? ""}`.split("\n").slice(-20).join("\n").trim(),
+      exitCode: result.exitCode,
+      ok: result.exitCode === 0,
+      outputTail: result.outputTail,
     });
-    logStatus(options, `crabpot: ${cmd} ${args.join(" ")} ${result.status === 0 ? "passed" : `failed exit=${result.status}`}`);
+    logStatus(options, `crabpot: ${cmd} ${args.join(" ")} ${result.exitCode === 0 ? "passed" : `failed exit=${result.exitCode}`}`);
+    if (result.exitCode !== 0 && result.outputTail) {
+      logStatus(options, `crabpot: ${cmd} ${args.join(" ")}: output tail:\n${result.outputTail}`);
+    }
   }
   return {
     type: "crabpot",
@@ -968,11 +978,11 @@ async function main() {
   const crabbox = [];
   if (options.suites.has("crabbox")) {
     for (const lane of profile.downloadLanes) {
-      crabbox.push(runCrabboxLane(lane, candidate, options));
+      crabbox.push(await runCrabboxLane(lane, candidate, options));
     }
   }
 
-  const crabpot = runLocalCrabpot(candidate, options);
+  const crabpot = await runLocalCrabpot(candidate, options);
   const prompts = options.suites.has("prompts") ? writePromptManifest(outputDir) : [];
   if (options.suites.has("prompts")) {
     logStatus(options, `prompts: wrote prompt pack (${prompts.length} prompts)`);

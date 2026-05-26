@@ -48,6 +48,11 @@ published package version and checks out the matching OpenClaw source tag
 (`v<version>`). If that source ref is missing, the lane fails instead of testing
 against an unrelated checkout.
 
+During normal terminal runs, Clawlab streams subprocess output with a lane prefix
+while also saving the tail in `manifest.json`. This is the default for download,
+Crabbox, and local Crabpot lanes. `--json` keeps the terminal output
+machine-parseable and only prints the final summary JSON.
+
 Downloads are cached in the OS cache directory by default:
 
 ```text
