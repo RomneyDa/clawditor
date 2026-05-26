@@ -27,6 +27,7 @@ const profiles = {
     kovaRepeat: "1",
     kovaFilters: ["scenario:fresh-install"],
     downloadLanes: ["package-smoke"],
+    crabboxLanes: ["package-smoke"],
   },
   standard: {
     releaseProfile: "beta",
@@ -41,7 +42,8 @@ const profiles = {
       "scenario:bundled-runtime-deps",
       "scenario:agent-cold-warm-message",
     ],
-    downloadLanes: ["package-smoke", "cli-smoke", "crabpot"],
+    downloadLanes: ["package-smoke", "cli-smoke"],
+    crabboxLanes: ["package-smoke", "cli-smoke", "crabpot"],
   },
   full: {
     releaseProfile: "full",
@@ -56,7 +58,8 @@ const profiles = {
       "scenario:bundled-runtime-deps",
       "scenario:agent-cold-warm-message",
     ],
-    downloadLanes: ["package-smoke", "cli-smoke", "crabpot", "prompt-pack"],
+    downloadLanes: ["package-smoke", "cli-smoke", "prompt-pack"],
+    crabboxLanes: ["package-smoke", "cli-smoke", "crabpot", "prompt-pack"],
   },
 };
 
@@ -201,25 +204,37 @@ function isCrabpotRepo(path: string): boolean {
 
 function syncGitCheckout(path: string, repoUrl: string, ref: string, label: string, options: CliOptions): void {
   mkdirSync(dirname(path), { recursive: true });
-  if (existsSync(resolve(path, ".git"))) {
-    logStatus(options, `preflight: refreshing cached ${label} (${ref})`);
-    runSync("git", ["-C", path, "fetch", "--depth", "1", "origin", ref]);
-    runSync("git", ["-C", path, "checkout", "-q", "FETCH_HEAD"]);
-    runSync("git", ["-C", path, "reset", "--hard", "-q", "FETCH_HEAD"]);
-  } else {
-    logStatus(options, `preflight: cloning ${label} (${ref}) into cache`);
-    runSync("git", ["clone", "--depth", "1", "--branch", ref, repoUrl, path]);
+  if (!existsSync(resolve(path, ".git"))) {
+    logStatus(options, `preflight: cloning ${label} into cache (${path})`);
+    runSync("git", ["clone", "--filter=blob:none", repoUrl, path]);
   }
+  logStatus(options, `preflight: syncing cached ${label} to ${ref}`);
+  runSync("git", ["-C", path, "fetch", "--depth", "1", "origin", ref]);
+  runSync("git", ["-C", path, "checkout", "-q", "FETCH_HEAD"]);
+  runSync("git", ["-C", path, "reset", "--hard", "-q", "FETCH_HEAD"]);
 }
 
-function ensureCachedOpenclawCheckout(options: CliOptions): string {
-  const path = resolve(options.cacheRoot, "repos/openclaw-suite");
+function resolveOpenclawCandidateRef(candidate: Candidate): string {
+  if (candidate.kind === "package") {
+    const result = runSync("npm", ["view", candidate.label, "version"], { capture: true });
+    const version = (result.stdout ?? "").trim();
+    if (!version) {
+      throw new Error(`could not resolve version for ${candidate.label} via npm view`);
+    }
+    return `v${version}`;
+  }
+  return candidate.targetRef;
+}
+
+function ensureCachedOpenclawCheckout(options: CliOptions, candidate: Candidate): string {
+  const path = resolve(options.cacheRoot, "repos/openclaw");
   if (options.dryRun) return path;
-  syncGitCheckout(path, "https://github.com/openclaw/openclaw.git", "main", "OpenClaw", options);
+  const ref = resolveOpenclawCandidateRef(candidate);
+  syncGitCheckout(path, "https://github.com/openclaw/openclaw.git", ref, "OpenClaw", options);
   return path;
 }
 
-function ensureCachedCrabboxCheckout(options: CliOptions): string {
+function ensureCachedCrabboxBinary(options: CliOptions): string {
   const path = resolve(options.cacheRoot, "repos/crabbox");
   if (options.dryRun) return path;
   if (!commandExists("go")) {
@@ -233,7 +248,7 @@ function ensureCachedCrabboxCheckout(options: CliOptions): string {
 }
 
 function ensureCachedCrabpotCheckout(options: CliOptions): string {
-  const path = resolve(options.cacheRoot, "repos/crabpot-suite");
+  const path = resolve(options.cacheRoot, "repos/crabpot");
   if (options.dryRun) return path;
   syncGitCheckout(path, "https://github.com/openclaw/crabpot.git", "crab-beta", "Crabpot", options);
   return path;
@@ -330,9 +345,9 @@ function rememberHighlight(highlights: string[], line: string): void {
 function missingCommandError(missing: string[]): string {
   const lines = [`missing required command(s): ${missing.join(", ")}`];
   if (missing.includes("git-lfs")) {
-    lines.push("git-lfs is required by the default Crabpot lane because some plugin fixtures use Git LFS-backed submodules.");
+    lines.push("git-lfs is required by the Crabpot suite because some plugin fixtures use Git LFS-backed submodules.");
     lines.push("On macOS with Homebrew: brew install git-lfs && git lfs install");
-    lines.push("To run the lighter local package smoke without Crabpot: clawditor test openclaw@beta --profile smoke");
+    lines.push("To skip Crabpot: clawditor test openclaw@beta --suite download,kova,crabbox,prompts");
   }
   return lines.join("\n");
 }
@@ -347,7 +362,7 @@ function readJsonCommand(command: string, args: string[], cwd?: string): any {
   }
 }
 
-function preflight(options: CliOptions, profile: Profile): JsonObject {
+function preflight(options: CliOptions, candidate: Candidate, profile: Profile): JsonObject {
   logStatus(options, "preflight: checking required tools");
   mkdirSync(options.cacheRoot, { recursive: true });
   const missing = [];
@@ -371,10 +386,7 @@ function preflight(options: CliOptions, profile: Profile): JsonObject {
   if (!options.dryRun && options.suites.has("kova")) {
     required.push("curl");
   }
-  if (!options.dryRun && (
-    (options.suites.has("download") && profile.downloadLanes.includes("crabpot")) ||
-    options.suites.has("crabpot")
-  )) {
+  if (!options.dryRun && options.suites.has("crabpot")) {
     required.push("git-lfs");
   }
   if (!options.dryRun && options.suites.has("crabbox")) {
@@ -388,9 +400,15 @@ function preflight(options: CliOptions, profile: Profile): JsonObject {
   }
 
   let openclawFromCache = false;
+  const crabboxNeedsCachedOpenclaw = options.suites.has("crabbox") && !options.openclawRoot;
+  const crabpotNeedsCachedOpenclaw = options.suites.has("crabpot") && !options.crabpotRoot;
+  let cachedOpenclawPath: string | null = null;
+  if (crabboxNeedsCachedOpenclaw || crabpotNeedsCachedOpenclaw) {
+    cachedOpenclawPath = ensureCachedOpenclawCheckout(options, candidate);
+  }
   if (options.suites.has("crabbox")) {
     if (!options.openclawRoot) {
-      options.openclawRoot = ensureCachedOpenclawCheckout(options);
+      options.openclawRoot = cachedOpenclawPath!;
       openclawFromCache = true;
     } else if (!isOpenclawRepo(options.openclawRoot)) {
       throw new Error(`--repo is not an OpenClaw checkout: ${options.openclawRoot}`);
@@ -399,7 +417,7 @@ function preflight(options: CliOptions, profile: Profile): JsonObject {
       throw new Error(`OpenClaw checkout at ${options.openclawRoot} is missing expected files`);
     }
     if (!options.dryRun && openclawFromCache) {
-      ensureCachedCrabboxCheckout(options);
+      ensureCachedCrabboxBinary(options);
     }
     if (!options.dryRun && !crabboxBinaryAvailable(options.openclawRoot)) {
       throw new Error(
@@ -732,7 +750,6 @@ async function runCrabboxLane(lane: string, candidate: Candidate, options: CliOp
 const downloadLaneDescriptions = {
   "package-smoke": "install candidate package in a temp home, run version and doctor",
   "cli-smoke": "install candidate package in a temp home, check core CLI help surfaces",
-  crabpot: "clone Crabpot into temp state and run static/plugin-inspector compatibility checks",
   "prompt-pack": "verify candidate package is runnable through npx and write prompt pack metadata",
 };
 
@@ -760,47 +777,7 @@ pnpm --dir "$${repoVar}" install --frozen-lockfile`;
 function downloadCommand(lane: string, candidate: Candidate, options: CliOptions): string[] {
   const candidatePackage = candidate.kind === "package" ? candidate.label : "openclaw@beta";
   const npmCache = resolve(options.cacheRoot, "npm");
-  const crabpotCache = resolve(options.cacheRoot, "repos/crabpot");
-  const openclawCache = resolve(options.cacheRoot, "repos/openclaw");
   const npmCacheEnv = `export npm_config_cache=${quote(npmCache)}`;
-  const sourceRefCommand = candidate.kind === "package"
-    ? [
-      stepCommand(`resolve source tag for ${candidatePackage}`),
-      `openclaw_version=$(npm view ${quote(candidatePackage)} version)`,
-      "openclaw_ref=\"v$openclaw_version\"",
-    ].join(" && ")
-    : `openclaw_ref=${quote(candidate.targetRef)}`;
-  const openclawSourceSync = `${sourceRefCommand}
-openclaw_repo=${quote(openclawCache)}
-if [ -d "$openclaw_repo/.git" ]; then
-  ${stepCommand("fetch cached OpenClaw source")}
-else
-  ${stepCommand("clone OpenClaw source")}
-  mkdir -p "$(dirname "$openclaw_repo")"
-  git clone --depth 1 https://github.com/openclaw/openclaw.git "$openclaw_repo"
-fi
-printf 'CLAWDITOR_STEP:using OpenClaw source ref %s\\n' "$openclaw_ref" >&2
-if git -C "$openclaw_repo" fetch --depth 1 origin "$openclaw_ref"; then
-  ${stepCommand("checkout OpenClaw source")}
-  git -C "$openclaw_repo" checkout -q FETCH_HEAD
-  git -C "$openclaw_repo" reset --hard -q FETCH_HEAD
-else
-  printf 'CLAWDITOR_STEP:WARN OpenClaw source ref %s was not found\\n' "$openclaw_ref" >&2
-  exit 1
-fi`;
-  const crabpotSync = `repo=${quote(crabpotCache)}
-if [ -d "$repo/.git" ]; then
-  ${stepCommand("fetch Crabpot crab-beta")}
-  git -C "$repo" fetch --depth 1 origin crab-beta
-else
-  ${stepCommand("clone Crabpot crab-beta")}
-  mkdir -p "$(dirname "$repo")"
-  git clone --depth 1 --branch crab-beta https://github.com/openclaw/crabpot.git "$repo"
-fi
-${stepCommand("reset Crabpot checkout")}
-git -C "$repo" checkout -q crab-beta
-git -C "$repo" reset --hard -q origin/crab-beta
-cd "$repo"`;
   const isolatedPackageInstall = [
     "set -euo pipefail",
     stepCommand("create isolated temp home"),
@@ -838,19 +815,6 @@ cd "$repo"`;
       "test -s /tmp/clawditor-doctor-help.txt",
       "test -s /tmp/clawditor-config-help.txt",
       "test -s /tmp/clawditor-plugins-help.txt",
-    ].join(" && "),
-    crabpot: [
-      "set -euo pipefail",
-      stepCommand("configure npm cache"),
-      npmCacheEnv,
-      openclawSourceSync,
-      crabpotSync,
-      stepCommand("npm install in Crabpot"),
-      "npm install",
-      stepCommand("npm run check in Crabpot"),
-      "npm run check",
-      stepCommand("npm run plugin-inspector:smoke in Crabpot"),
-      "npm run plugin-inspector:smoke",
     ].join(" && "),
     "prompt-pack": [
       "set -euo pipefail",
@@ -937,12 +901,7 @@ async function runDownloadLane(lane: string, candidate: Candidate, options: CliO
     return { type: "download", lane, action: "dry-run", command: command.join(" ") };
   }
   logStatus(options, `download: running ${lane} - ${downloadLaneDescriptions[lane] ?? "run package/cache lane"}`);
-  if (lane === "crabpot") {
-    logStatus(options, `cache: crabpot repo ${resolve(options.cacheRoot, "repos/crabpot")}`);
-    logStatus(options, `cache: openclaw source ${resolve(options.cacheRoot, "repos/openclaw")}`);
-  } else {
-    logStatus(options, `cache: npm ${resolve(options.cacheRoot, "npm")}`);
-  }
+  logStatus(options, `cache: npm ${resolve(options.cacheRoot, "npm")}`);
   const startedAt = new Date().toISOString();
   const result: RunResult = await runLiveProcess(command, `download: ${lane}`, options);
   const run = {
@@ -1180,10 +1139,12 @@ async function runKova(candidate: Candidate, profile: Profile, options: CliOptio
 
 async function runLocalCrabpot(candidate: Candidate, options: CliOptions): Promise<RunResult | null> {
   if (!options.suites.has("crabpot")) return null;
-  const commands: Array<[string, string[]]> = [
-    ["npm", ["run", "check"]],
-    ["npm", ["run", "plugin-inspector:smoke"]],
-  ];
+  const commands: Array<[string, string[]]> = [];
+  if (options.dryRun || !existsSync(resolve(options.crabpotRoot, "node_modules"))) {
+    commands.push(["npm", ["install"]]);
+  }
+  commands.push(["npm", ["run", "check"]]);
+  commands.push(["npm", ["run", "plugin-inspector:smoke"]]);
   const results = [];
   for (const [cmd, args] of commands) {
     if (options.dryRun) {
@@ -1286,7 +1247,33 @@ function crabboxSummaryLines(run: JsonObject): string[] {
   return [...lines, ""];
 }
 
-function kovaSummaryLines(run: JsonObject | null): string[] {
+function readKovaReportMarkdown(outputDir: string, reportJsonRelative: string | null): string | null {
+  if (!reportJsonRelative) return null;
+  const mdPath = resolve(outputDir, reportJsonRelative.replace(/\.json$/u, ".md"));
+  try {
+    return readFileSync(mdPath, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+function kovaReportEmbedLines(reportMd: string, reportRelative: string | null): string[] {
+  const trimmed = reportMd.trim();
+  if (!trimmed) return [];
+  const maxLines = 400;
+  const allLines = trimmed.split("\n");
+  const truncated = allLines.length > maxLines;
+  const body = truncated ? allLines.slice(0, maxLines) : allLines;
+  const heading = reportRelative ? `Kova report (${reportRelative}):` : "Kova report:";
+  const block = ["", heading, "", "```markdown", ...body];
+  if (truncated) {
+    block.push(`... (${allLines.length - maxLines} more lines truncated)`);
+  }
+  block.push("```");
+  return block;
+}
+
+function kovaSummaryLines(run: JsonObject | null, outputDir: string): string[] {
   if (!run) {
     return ["- skipped: Kova suite was not selected.", ""];
   }
@@ -1305,6 +1292,10 @@ function kovaSummaryLines(run: JsonObject | null): string[] {
   const highlights = [...(run.reportHighlights ?? []), ...(run.highlights ?? [])];
   if (highlights.length) {
     lines.push("", "Highlights:", ...highlights.map((line) => `- ${line}`));
+  }
+  const reportMd = readKovaReportMarkdown(outputDir, run.reportJson);
+  if (reportMd) {
+    lines.push(...kovaReportEmbedLines(reportMd, run.reportJson));
   }
   if (run.outputTail) {
     lines.push("", "Output tail:", ...fencedBlock(run.outputTail));
@@ -1368,7 +1359,7 @@ function writeSummary(outputDir: string, summary: JsonObject): void {
     ...(summary.download.length > 0
       ? ["## Package/Cache Lanes", ...summary.download.flatMap((run) => downloadSummaryLines(run))]
       : []),
-    ...(summary.kova ? ["## Kova", ...kovaSummaryLines(summary.kova)] : []),
+    ...(summary.kova ? ["## Kova", ...kovaSummaryLines(summary.kova, outputDir)] : []),
     ...(summary.crabbox.length > 0
       ? ["## Crabbox", ...summary.crabbox.flatMap((run) => crabboxSummaryLines(run))]
       : []),
@@ -1475,7 +1466,7 @@ async function main() {
   logStatus(options, `clawditor: suites ${[...options.suites].join(", ") || "none"}`);
   logStatus(options, `clawditor: writing artifacts to ${relative(process.cwd(), outputDir)}`);
 
-  const preflightData = preflight(options, profile);
+  const preflightData = preflight(options, candidate, profile);
   if (!options.suites.has("github")) {
     logStatus(options, "github: skipped (use --remote or --suite github to enable)");
   }
@@ -1494,7 +1485,7 @@ async function main() {
 
   const crabbox = [];
   if (options.suites.has("crabbox")) {
-    for (const lane of profile.downloadLanes) {
+    for (const lane of profile.crabboxLanes) {
       crabbox.push(await runCrabboxLane(lane, candidate, options));
     }
   }

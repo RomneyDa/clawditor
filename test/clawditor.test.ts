@@ -57,7 +57,7 @@ describe("clawditor cli", () => {
     assert.equal(summary.profile, "standard");
     assert.deepEqual(
       summary.download.map((run) => run.lane),
-      ["package-smoke", "cli-smoke", "crabpot"],
+      ["package-smoke", "cli-smoke"],
     );
     assert.equal(summary.github.length, 0);
   });
@@ -74,7 +74,8 @@ describe("clawditor cli", () => {
     assert.ok(summary.crabbox.length > 0, "crabbox suite ran by default");
     assert.ok(summary.crabbox.every((run) => run.action === "dry-run"));
     assert.ok(summary.crabpot, "crabpot suite ran by default");
-    assert.ok(summary.crabbox[0].command.includes("/repos/openclaw-suite/"));
+    assert.ok(summary.crabbox[0].command.includes("/repos/openclaw/"));
+    assert.ok(summary.crabbox.some((run) => run.lane === "crabpot"), "crabbox still re-runs the crabpot lane in the sandbox");
     assert.equal(summary.verdict, "DRY_RUN");
   });
 
