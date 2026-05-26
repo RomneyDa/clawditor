@@ -54,11 +54,23 @@ stages always run; the rest are opt-in via `--remote` or `--suite`.
 
 ## Install
 
-From GitHub:
+From GitHub (use the tarball URL):
 
 ```sh
 npm install -g https://github.com/RomneyDa/clawditor/archive/refs/heads/main.tar.gz
 ```
+
+> ⚠️ **Do not use `npm i -g github:RomneyDa/clawditor` or `git+https://…clawditor.git`.**
+> The npm shortform git-install path symlinks its temporary git-clone
+> cache directory as the global install, then deletes that temp directory
+> when the install finishes, leaving a dangling symlink and a
+> `command not found: clawditor`. This is an npm bug we can't fix from
+> inside the package. The tarball URL above downloads and unpacks
+> normally and is the reliable install method. If a prior `github:` /
+> `git+https://` attempt has left a broken symlink, run
+> `npm uninstall -g clawditor` (or
+> `rm /usr/local/lib/node_modules/clawditor /usr/local/bin/clawditor`
+> on the corresponding paths under your Node prefix) before reinstalling.
 
 From a local checkout:
 
