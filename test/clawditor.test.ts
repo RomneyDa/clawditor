@@ -76,6 +76,13 @@ describe("clawditor cli", () => {
     assert.ok(summary.crabpot, "crabpot suite ran by default");
     assert.ok(summary.crabbox[0].command.includes("/repos/openclaw/"));
     assert.ok(summary.crabbox.some((run) => run.lane === "crabpot"), "crabbox still re-runs the crabpot lane in the sandbox");
+    assert.match(summary.crabbox.find((run) => run.lane === "package-smoke").command, /npm_config_prefix="\$tmp\/prefix"/u);
+    assert.match(summary.crabbox.find((run) => run.lane === "crabpot").command, /crabpot_cache="\$cache_root\/crabpot"/u);
+    assert.match(summary.crabbox.find((run) => run.lane === "crabpot").command, /ln -s "\$PWD" "\$tmp\/openclaw"/u);
+    assert.match(summary.crabbox.find((run) => run.lane === "crabpot").command, /test -s "\$tmp\/openclaw\/package\.json"/u);
+    assert.equal(summary.codex.action, "dry-run");
+    assert.equal(summary.codex.timeoutMs, 20 * 60 * 1000);
+    assert.match(summary.codex.command, /codex --ask-for-approval never exec/u);
     assert.equal(summary.verdict, "DRY_RUN");
   });
 

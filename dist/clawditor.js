@@ -20,6 +20,7 @@ const profiles = {
         kovaFilters: ["scenario:fresh-install"],
         downloadLanes: ["package-smoke"],
         crabboxLanes: ["package-smoke"],
+        codexAudit: false,
     },
     standard: {
         releaseProfile: "beta",
@@ -36,6 +37,7 @@ const profiles = {
         ],
         downloadLanes: ["package-smoke", "cli-smoke"],
         crabboxLanes: ["package-smoke", "cli-smoke", "crabpot"],
+        codexAudit: true,
     },
     full: {
         releaseProfile: "full",
@@ -52,9 +54,12 @@ const profiles = {
         ],
         downloadLanes: ["package-smoke", "cli-smoke", "prompt-pack"],
         crabboxLanes: ["package-smoke", "cli-smoke", "crabpot", "prompt-pack"],
+        codexAudit: true,
     },
 };
-const defaultSuites = new Set(["download", "kova", "crabbox", "crabpot", "prompts"]);
+const defaultSuites = new Set(["download", "kova", "crabbox", "crabpot", "codex", "prompts"]);
+const codexAuditPrompt = "codex-crabbox-break-beta.md";
+const codexAuditTimeoutMs = 20 * 60 * 1000;
 function usage() {
     return `Usage:
   clawditor test openclaw@beta [options]
@@ -66,7 +71,7 @@ Options:
   --crabpot <path>                    Local Crabpot checkout (default: cached crabpot/crab-beta clone)
   --output <path>                     Artifact root (default: .artifacts)
   --cache <path>                      Cache root (default: OS cache dir)
-  --suite <names>                     Comma list: github,download,kova,crabbox,crabpot,prompts
+  --suite <names>                     Comma list: github,download,kova,crabbox,crabpot,codex,prompts
   --github-mode umbrella|separate     Workflow strategy (default: umbrella)
   --remote                            Add GitHub workflow dispatch/reuse
   --force-workflows                   Start workflows even when active runs exist
@@ -384,7 +389,7 @@ function preflight(options, candidate, profile) {
         throw new Error(missingCommandError(missing));
     }
     let openclawFromCache = false;
-    const crabboxNeedsCachedOpenclaw = options.suites.has("crabbox") && !options.openclawRoot;
+    const crabboxNeedsCachedOpenclaw = (options.suites.has("crabbox") || (options.suites.has("codex") && profile.codexAudit)) && !options.openclawRoot;
     const crabpotNeedsCachedOpenclaw = options.suites.has("crabpot") && !options.crabpotRoot;
     let cachedOpenclawPath = null;
     if (crabboxNeedsCachedOpenclaw || crabpotNeedsCachedOpenclaw) {
@@ -406,6 +411,21 @@ function preflight(options, candidate, profile) {
         }
         if (!options.dryRun && !crabboxBinaryAvailable(options.openclawRoot)) {
             throw new Error(`Crabbox binary not found for ${options.openclawRoot}. Clone openclaw/crabbox next to that checkout or add crabbox to PATH.`);
+        }
+    }
+    if (options.suites.has("codex") && profile.codexAudit) {
+        if (!options.openclawRoot) {
+            options.openclawRoot = cachedOpenclawPath;
+            openclawFromCache = true;
+        }
+        else if (!isOpenclawRepo(options.openclawRoot)) {
+            throw new Error(`--repo is not an OpenClaw checkout: ${options.openclawRoot}`);
+        }
+        if (!options.dryRun && !isOpenclawRepo(options.openclawRoot)) {
+            throw new Error(`OpenClaw checkout at ${options.openclawRoot} is missing expected files`);
+        }
+        if (!options.dryRun && !crabboxBinaryAvailable(options.openclawRoot)) {
+            ensureCachedCrabboxBinary(options);
         }
     }
     if (options.suites.has("crabpot")) {
@@ -631,16 +651,29 @@ function crabboxCommand(lane, candidate, options) {
     const candidateExport = candidate.kind === "package"
         ? `export OPENCLAW_CANDIDATE_PACKAGE=${quote(candidate.label)}`
         : "";
-    const packageDoctor = [
+    const isolatedPackageEnv = [
         candidateExport,
         "tmp=$(mktemp -d)",
         "export HOME=\"$tmp/home\"",
         "export OPENCLAW_HOME=\"$tmp/openclaw\"",
         "export OPENCLAW_STATE_DIR=\"$tmp/state\"",
+        "export npm_config_prefix=\"$tmp/prefix\"",
+        "export PATH=\"$npm_config_prefix/bin:$PATH\"",
+    ];
+    const packageDoctor = [
+        ...isolatedPackageEnv,
         "npm install -g \"$OPENCLAW_CANDIDATE_PACKAGE\"",
         "openclaw --version",
         "openclaw doctor --non-interactive",
     ].join(" && ");
+    const crabpotCacheScript = [
+        "cache_root=\"${XDG_CACHE_HOME:-$HOME/.cache}/clawditor/crabbox\"",
+        "crabpot_cache=\"$cache_root/crabpot\"",
+        "mkdir -p \"$cache_root\"",
+        "if [ -d \"$crabpot_cache/.git\" ]; then git -C \"$crabpot_cache\" fetch --depth 1 origin crab-beta; else git clone --filter=blob:none --depth 1 --branch crab-beta https://github.com/openclaw/crabpot.git \"$crabpot_cache\"; fi",
+        "git -C \"$crabpot_cache\" checkout -q FETCH_HEAD",
+        "git -C \"$crabpot_cache\" reset --hard -q FETCH_HEAD",
+    ];
     const commands = {
         "package-smoke": candidate.kind === "package"
             ? `echo CRABBOX_PHASE:doctor && ${packageDoctor}`
@@ -648,11 +681,7 @@ function crabboxCommand(lane, candidate, options) {
         "cli-smoke": candidate.kind === "package"
             ? [
                 "echo CRABBOX_PHASE:cli-smoke",
-                candidateExport,
-                "tmp=$(mktemp -d)",
-                "export HOME=\"$tmp/home\"",
-                "export OPENCLAW_HOME=\"$tmp/openclaw\"",
-                "export OPENCLAW_STATE_DIR=\"$tmp/state\"",
+                ...isolatedPackageEnv,
                 "npm install -g \"$OPENCLAW_CANDIDATE_PACKAGE\"",
                 "openclaw --help >/tmp/clawditor-openclaw-help.txt",
                 "openclaw doctor --help >/tmp/clawditor-doctor-help.txt",
@@ -667,7 +696,10 @@ function crabboxCommand(lane, candidate, options) {
         crabpot: [
             "echo CRABBOX_PHASE:crabpot",
             "tmp=$(mktemp -d)",
-            "git clone --depth 1 --branch crab-beta https://github.com/openclaw/crabpot.git \"$tmp/crabpot\"",
+            ...crabpotCacheScript,
+            "ln -s \"$PWD\" \"$tmp/openclaw\"",
+            "test -s \"$tmp/openclaw/package.json\"",
+            "git clone --reference-if-able \"$crabpot_cache\" --depth 1 --branch crab-beta https://github.com/openclaw/crabpot.git \"$tmp/crabpot\"",
             "cd \"$tmp/crabpot\"",
             "npm install",
             "npm run check",
@@ -795,13 +827,14 @@ function runLiveProcess(command, prefix, options, opts = {}) {
         const startedMs = Date.now();
         const child = spawn(command[0], command.slice(1), {
             cwd: opts.cwd ?? process.cwd(),
-            stdio: ["ignore", "pipe", "pipe"],
+            stdio: [opts.stdin ? "pipe" : "ignore", "pipe", "pipe"],
         });
         const lines = [];
         const highlights = [];
         let currentStep = "starting";
         let pending = "";
         let spawnError = null;
+        let timedOut = false;
         const rememberLine = (line) => {
             if (line.startsWith("CLAWDITOR_STEP:")) {
                 currentStep = line.slice("CLAWDITOR_STEP:".length).trim();
@@ -814,8 +847,9 @@ function runLiveProcess(command, prefix, options, opts = {}) {
                 return;
             }
             lines.push(line);
-            if (lines.length > 200) {
-                lines.splice(0, lines.length - 200);
+            const maxLines = opts.maxLines ?? 200;
+            if (lines.length > maxLines) {
+                lines.splice(0, lines.length - maxLines);
             }
             rememberHighlight(highlights, line);
             streamProcessOutput(options, prefix, line);
@@ -830,6 +864,9 @@ function runLiveProcess(command, prefix, options, opts = {}) {
         };
         child.stdout.on("data", rememberChunk);
         child.stderr.on("data", rememberChunk);
+        if (opts.stdin && child.stdin) {
+            child.stdin.end(String(opts.stdin));
+        }
         child.on("error", (error) => {
             spawnError = error;
             rememberLine(error.message);
@@ -837,16 +874,30 @@ function runLiveProcess(command, prefix, options, opts = {}) {
         const heartbeat = setInterval(() => {
             logStatus(options, `${prefix}: still running ${currentStep} (${elapsedSeconds(startedMs)}s)`);
         }, opts.heartbeatMs ?? 15000);
+        const timeout = opts.timeoutMs
+            ? setTimeout(() => {
+                timedOut = true;
+                rememberLine(`timed out after ${Math.round(Number(opts.timeoutMs) / 1000)}s`);
+                child.kill("SIGTERM");
+                setTimeout(() => {
+                    if (child.exitCode === null && child.signalCode === null)
+                        child.kill("SIGKILL");
+                }, 5000).unref();
+            }, Number(opts.timeoutMs))
+            : null;
         child.on("close", (code) => {
             clearInterval(heartbeat);
+            if (timeout)
+                clearTimeout(timeout);
             if (pending) {
                 rememberLine(pending);
             }
             resolveRun({
-                exitCode: code ?? (spawnError ? 1 : 0),
+                exitCode: timedOut ? 124 : code ?? (spawnError ? 1 : 0),
                 highlights,
                 output: lines.join("\n").trim(),
                 outputTail: lines.slice(-30).join("\n").trim(),
+                timedOut,
             });
         });
     });
@@ -1002,7 +1053,8 @@ function kovaReportHighlights(report) {
     const failingRecords = Array.isArray(report.records)
         ? report.records.filter((record) => record?.status && !["PASS", "SKIP"].includes(record.status))
         : [];
-    for (const record of failingRecords.slice(0, 5)) {
+    const groupedFailures = new Map();
+    for (const record of failingRecords) {
         const bits = [
             record.status,
             record.scenario,
@@ -1010,7 +1062,11 @@ function kovaReportHighlights(report) {
             record.providerEvidence?.error,
             record.measurements?.readinessClassificationReason,
         ].filter(Boolean);
-        highlights.push(`record: ${bits.join(" - ")}`);
+        const key = bits.join(" - ");
+        groupedFailures.set(key, (groupedFailures.get(key) ?? 0) + 1);
+    }
+    for (const [key, count] of [...groupedFailures.entries()].slice(0, 5)) {
+        highlights.push(`record: ${key}${count > 1 ? ` (${count}x)` : ""}`);
     }
     const repeat = report.performance?.repeat;
     if (repeat !== undefined)
@@ -1134,6 +1190,7 @@ function writePromptManifest(outputDir) {
         "memory-media.md",
         "browser-tooling.md",
         "organic-agent-day.md",
+        codexAuditPrompt,
     ].map((name) => ({
         name,
         path: resolve(root, "prompts", name),
@@ -1141,9 +1198,131 @@ function writePromptManifest(outputDir) {
     writeFileSync(resolve(outputDir, "prompt-pack.json"), `${JSON.stringify(prompts, null, 2)}\n`);
     return prompts;
 }
+function codexAuditFinalVerdict(text) {
+    const finalLine = text.trim().split(/\r?\n/u).map((line) => line.trim()).filter(Boolean).at(-1)?.toLowerCase();
+    if (finalLine === "fail")
+        return "fail";
+    if (finalLine === "pass")
+        return "pass";
+    return "unknown";
+}
+function codexAuditPromptText(candidate, options, outputDir) {
+    const template = readFileSync(resolve(root, "prompts", codexAuditPrompt), "utf8");
+    return [
+        template.trim(),
+        "",
+        "## Clawditor Run Context",
+        "",
+        `- Candidate: ${candidate.label}`,
+        `- Candidate kind: ${candidate.kind}`,
+        `- Target ref: ${candidate.targetRef ?? "n/a"}`,
+        `- OpenClaw checkout: ${options.openclawRoot}`,
+        `- Artifact directory: ${outputDir}`,
+        `- Timeout: ${Math.round(codexAuditTimeoutMs / 60000)} minutes`,
+        "",
+        "Stay within the timeout. Prefer a few high-signal Crabbox/Testbox probes over a broad unfocused sweep.",
+        "",
+    ].join("\n");
+}
+async function runCodexAudit(candidate, profile, options, outputDir) {
+    if (!options.suites.has("codex") || !profile.codexAudit)
+        return null;
+    const auditDir = resolve(outputDir, "codex-crabbox-audit");
+    const promptPath = resolve(auditDir, "prompt.md");
+    const outputPath = resolve(auditDir, "codex-output.txt");
+    const lastMessagePath = resolve(auditDir, "last-message.md");
+    const reportPath = resolve(auditDir, "report.json");
+    mkdirSync(auditDir, { recursive: true });
+    const prompt = codexAuditPromptText(candidate, options, outputDir);
+    writeFileSync(promptPath, prompt);
+    const command = [
+        "codex",
+        "--ask-for-approval",
+        "never",
+        "exec",
+        "--sandbox",
+        "danger-full-access",
+        "--cd",
+        options.openclawRoot,
+        "--output-last-message",
+        lastMessagePath,
+        "-",
+    ];
+    if (options.dryRun) {
+        logStatus(options, "codex: dry-run crabbox audit");
+        const run = {
+            type: "codex",
+            lane: "crabbox-audit",
+            action: "dry-run",
+            prompt: relative(outputDir, promptPath),
+            command: command.join(" "),
+            timeoutMs: codexAuditTimeoutMs,
+        };
+        writeFileSync(reportPath, `${JSON.stringify(run, null, 2)}\n`);
+        return run;
+    }
+    if (!commandExists("codex")) {
+        const run = {
+            type: "codex",
+            lane: "crabbox-audit",
+            action: "blocked",
+            ok: true,
+            harnessOk: false,
+            modelVerdict: "unknown",
+            prompt: relative(outputDir, promptPath),
+            report: relative(outputDir, reportPath),
+            error: "codex command not found",
+        };
+        writeFileSync(reportPath, `${JSON.stringify(run, null, 2)}\n`);
+        logStatus(options, "codex: blocked - codex command not found");
+        return run;
+    }
+    logStatus(options, "codex: running crabbox audit");
+    const startedAt = new Date().toISOString();
+    const result = await runLiveProcess(command, "codex: crabbox-audit", options, {
+        cwd: options.openclawRoot,
+        stdin: prompt,
+        timeoutMs: codexAuditTimeoutMs,
+        heartbeatMs: 30000,
+        maxLines: 2000,
+    });
+    writeFileSync(outputPath, `${result.output}\n`);
+    let lastMessage = "";
+    try {
+        lastMessage = readFileSync(lastMessagePath, "utf8");
+    }
+    catch {
+        lastMessage = "";
+    }
+    const modelVerdict = codexAuditFinalVerdict(lastMessage || result.output);
+    const harnessOk = result.exitCode === 0 && !result.timedOut && Boolean(lastMessage);
+    const run = {
+        type: "codex",
+        lane: "crabbox-audit",
+        action: harnessOk || modelVerdict === "fail" ? "ran" : "blocked",
+        startedAt,
+        exitCode: result.exitCode,
+        timedOut: result.timedOut,
+        ok: modelVerdict !== "fail",
+        harnessOk,
+        modelVerdict,
+        prompt: relative(outputDir, promptPath),
+        output: relative(outputDir, outputPath),
+        lastMessage: existsSync(lastMessagePath) ? relative(outputDir, lastMessagePath) : null,
+        report: relative(outputDir, reportPath),
+        command: command.join(" "),
+        outputTail: result.outputTail,
+        error: harnessOk ? null : "Codex harness did not complete cleanly; not counted as a product failure unless the model verdict is fail.",
+    };
+    writeFileSync(reportPath, `${JSON.stringify(run, null, 2)}\n`);
+    logStatus(options, `codex: crabbox audit verdict=${modelVerdict} harness=${harnessOk ? "pass" : "blocked"}`);
+    return run;
+}
 function statusText(run) {
     if (run.action === "dry-run")
         return "dry-run";
+    if (run.action === "blocked")
+        return `blocked${run.exitCode !== undefined ? ` (exit ${run.exitCode})` : ""}`;
     if (run.ok === true)
         return `pass${run.exitCode !== undefined ? ` (exit ${run.exitCode})` : ""}`;
     if (run.ok === false)
@@ -1161,6 +1340,9 @@ function fencedBlock(value) {
     if (!text)
         return [];
     return ["", "```text", text, "```"];
+}
+function uniqueLines(lines) {
+    return [...new Set(lines.map((line) => String(line)).filter(Boolean))];
 }
 function downloadSummaryLines(run) {
     const lines = [
@@ -1201,34 +1383,7 @@ function crabboxSummaryLines(run) {
     }
     return [...lines, ""];
 }
-function readKovaReportMarkdown(outputDir, reportJsonRelative) {
-    if (!reportJsonRelative)
-        return null;
-    const mdPath = resolve(outputDir, reportJsonRelative.replace(/\.json$/u, ".md"));
-    try {
-        return readFileSync(mdPath, "utf8");
-    }
-    catch {
-        return null;
-    }
-}
-function kovaReportEmbedLines(reportMd, reportRelative) {
-    const trimmed = reportMd.trim();
-    if (!trimmed)
-        return [];
-    const maxLines = 400;
-    const allLines = trimmed.split("\n");
-    const truncated = allLines.length > maxLines;
-    const body = truncated ? allLines.slice(0, maxLines) : allLines;
-    const heading = reportRelative ? `Kova report (${reportRelative}):` : "Kova report:";
-    const block = ["", heading, "", "```markdown", ...body];
-    if (truncated) {
-        block.push(`... (${allLines.length - maxLines} more lines truncated)`);
-    }
-    block.push("```");
-    return block;
-}
-function kovaSummaryLines(run, outputDir) {
+function kovaSummaryLines(run) {
     if (!run) {
         return ["- skipped: Kova suite was not selected.", ""];
     }
@@ -1248,13 +1403,9 @@ function kovaSummaryLines(run, outputDir) {
         lines.push(`- filters: ${run.filters.join(", ")}`);
     if (run.command)
         lines.push(`- command: \`${run.command}\``);
-    const highlights = [...(run.reportHighlights ?? []), ...(run.highlights ?? [])];
+    const highlights = uniqueLines([...(run.reportHighlights ?? []), ...(run.highlights ?? [])]);
     if (highlights.length) {
         lines.push("", "Highlights:", ...highlights.map((line) => `- ${line}`));
-    }
-    const reportMd = readKovaReportMarkdown(outputDir, run.reportJson);
-    if (reportMd) {
-        lines.push(...kovaReportEmbedLines(reportMd, run.reportJson));
     }
     if (run.outputTail) {
         lines.push("", "Output tail:", ...fencedBlock(run.outputTail));
@@ -1275,6 +1426,38 @@ function localCrabpotSummaryLines(crabpot) {
     }
     return lines;
 }
+function codexSummaryLines(run) {
+    if (!run) {
+        return ["- skipped: Codex Crabbox audit was not selected.", ""];
+    }
+    const lines = [
+        `### ${run.lane}`,
+        "",
+        `- status: ${statusText(run)}`,
+        `- model verdict: ${run.modelVerdict ?? "unknown"}`,
+        `- harness: ${run.harnessOk === false ? "blocked" : run.harnessOk === true ? "pass" : "not run"}`,
+    ];
+    if (run.startedAt)
+        lines.push(`- started: ${run.startedAt}`);
+    if (run.timedOut)
+        lines.push("- timed out: true");
+    if (run.prompt)
+        lines.push(`- prompt: ${run.prompt}`);
+    if (run.lastMessage)
+        lines.push(`- last message: ${run.lastMessage}`);
+    if (run.output)
+        lines.push(`- output: ${run.output}`);
+    if (run.report)
+        lines.push(`- report: ${run.report}`);
+    if (run.error)
+        lines.push(`- note: ${run.error}`);
+    if (run.command)
+        lines.push(`- command: \`${run.command}\``);
+    if (run.outputTail) {
+        lines.push("", "Output tail:", ...fencedBlock(run.outputTail));
+    }
+    return [...lines, ""];
+}
 function notRunLines(summary) {
     const lines = [];
     if (summary.github.length === 0) {
@@ -1291,6 +1474,9 @@ function notRunLines(summary) {
     }
     if (!summary.crabpot) {
         lines.push("- Crabpot suite: not selected. Add `crabpot` back to `--suite` (and optionally pass `--crabpot <local-crabpot-checkout>`) to re-enable.");
+    }
+    if (!summary.codex) {
+        lines.push("- Codex Crabbox audit: not selected for this profile/suite. Use the default `standard` profile with `codex` in `--suite` to enable.");
     }
     if (summary.prompts.length === 0) {
         lines.push("- Prompt pack: not selected.");
@@ -1315,11 +1501,12 @@ function writeSummary(outputDir, summary) {
         ...(summary.download.length > 0
             ? ["## Package/Cache Lanes", ...summary.download.flatMap((run) => downloadSummaryLines(run))]
             : []),
-        ...(summary.kova ? ["## Kova", ...kovaSummaryLines(summary.kova, outputDir)] : []),
+        ...(summary.kova ? ["## Kova", ...kovaSummaryLines(summary.kova)] : []),
         ...(summary.crabbox.length > 0
             ? ["## Crabbox", ...summary.crabbox.flatMap((run) => crabboxSummaryLines(run))]
             : []),
         ...(summary.crabpot ? ["## Crabpot", ...localCrabpotSummaryLines(summary.crabpot)] : []),
+        ...(summary.codex ? ["## Codex Crabbox Audit", ...codexSummaryLines(summary.codex)] : []),
         ...(summary.prompts.length > 0
             ? ["## Prompts", ...summary.prompts.map((prompt) => `- ${prompt.name} (${prompt.path})`), ""]
             : []),
@@ -1328,6 +1515,7 @@ function writeSummary(outputDir, summary) {
         "- `manifest.json`: full structured result data",
         "- `summary.md`: this review summary",
         ...(summary.kova?.reportJson ? [`- \`${summary.kova.reportJson}\`: Kova JSON report`] : []),
+        ...(summary.codex?.report ? [`- \`${summary.codex.report}\`: Codex Crabbox audit report`] : []),
         ...(summary.prompts.length > 0 ? ["- `prompt-pack.json`: prompt preset manifest"] : []),
         "",
     ];
@@ -1338,9 +1526,10 @@ function verdictFor(summary) {
     const failedKova = summary.kova && summary.kova.ok === false;
     const failedCrabbox = summary.crabbox.some((run) => run.exitCode !== undefined && run.exitCode !== 0);
     const failedCrabpot = summary.crabpot && !summary.crabpot.ok;
-    if (failedDownload || failedKova || failedCrabbox || failedCrabpot)
+    const failedCodexProduct = summary.codex?.modelVerdict === "fail";
+    if (failedDownload || failedKova || failedCrabbox || failedCrabpot || failedCodexProduct)
         return "LOCAL_FAIL";
-    const dry = [...summary.github, ...summary.download, summary.kova, ...summary.crabbox]
+    const dry = [...summary.github, ...summary.download, summary.kova, ...summary.crabbox, summary.codex]
         .filter(Boolean)
         .some((run) => run.action === "dry-run");
     if (dry)
@@ -1438,6 +1627,7 @@ async function main() {
         }
     }
     const crabpot = await runLocalCrabpot(candidate, options);
+    const codex = await runCodexAudit(candidate, profile, options, outputDir);
     const prompts = options.suites.has("prompts") ? writePromptManifest(outputDir) : [];
     if (options.suites.has("prompts")) {
         logStatus(options, `prompts: wrote prompt pack (${prompts.length} prompts)`);
@@ -1453,6 +1643,7 @@ async function main() {
         kova,
         crabbox,
         crabpot,
+        codex,
         prompts: prompts.map((prompt) => ({
             name: prompt.name,
             path: relative(root, prompt.path),

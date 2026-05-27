@@ -38,22 +38,32 @@ stages always run; the rest are opt-in via `--remote` or `--suite`.
    plan` and `kova matrix run` against the `mock-provider` lane with the
    profile's repeat count and scenario filters.
 5. **Crabbox** *(default)* — re-runs the package/cache lanes (plus the
-   `crabpot` lane, which clones Crabpot fresh inside the sandbox) via
+   `crabpot` lane, which runs an isolated Crabpot checkout inside the sandbox) via
    `scripts/crabbox-wrapper.mjs` (the `blacksmith-testbox` provider
    against `openclaw/openclaw`'s `ci-check-testbox.yml`), producing a
    `tbx_…` / `cbx_…` run id for off-machine proof. By default this uses
    the cached `openclaw/openclaw` checkout (synced to the candidate's
    matching ref); pass `--repo <openclaw-checkout>` to point at a local
-   dev checkout instead.
+   dev checkout instead. The remote `crabpot` lane symlinks that existing
+   OpenClaw checkout as Crabpot's expected `../openclaw` sibling and keeps a
+   best-effort Crabpot git object cache under the remote `$HOME/.cache`.
 6. **Crabpot** *(default)* — `npm install` (when needed), `npm run check`,
    and `npm run plugin-inspector:smoke` inside a Crabpot working copy.
    By default this uses the cached `openclaw/crabpot@crab-beta` checkout
    sitting as a sibling to the cached OpenClaw source (the version-pin
    the scripts rely on); pass `--crabpot <checkout>` to point at a local
    dev checkout instead.
-7. **Prompt pack** *(default)* — writes `prompt-pack.json` referencing the
+7. **Codex Crabbox audit** *(default standard/full profiles)* — runs one
+   local Codex CLI worker for up to 20 minutes from the cached OpenClaw
+   checkout. The worker receives `prompts/codex-crabbox-break-beta.md`, must
+   never ask for approval, and should try to break the beta using
+   Crabbox/Testbox. Harness failures such as missing Codex auth, missing
+   local Codex, timeouts, or Testbox capacity are recorded in the report but
+   do not fail Clawditor unless the model's final response ends with exactly
+   `fail`.
+8. **Prompt pack** *(default)* — writes `prompt-pack.json` referencing the
    bundled prompt presets under `prompts/`.
-8. **Summary** — writes `manifest.json` and `summary.md` under
+9. **Summary** — writes `manifest.json` and `summary.md` under
    `.artifacts/clawditor-*`, then prints the final verdict
    (`LOCAL_PASS`, `LOCAL_FAIL`, `REMOTE_STARTED_LOCAL_PASS`,
    `REMOTE_REUSED_LOCAL_PASS`, or `DRY_RUN`). With `--watch`, GitHub runs
@@ -119,6 +129,8 @@ Requirements:
   `scripts/crabbox-wrapper.mjs` shells out to
 - go for the default Crabbox suite, which builds `openclaw/crabbox` into
   `<cache>/repos/crabbox/bin/crabbox`
+- codex for the default Codex Crabbox audit. If Codex is not installed or is
+  not authenticated, Clawditor records that as a non-blocking harness issue.
 
 Normal use is local-first and does not require providing OpenClaw or Crabpot
 checkouts. `clawditor` installs candidate npm packages into temporary homes for
@@ -207,20 +219,21 @@ when you explicitly want a fresh run.
 - `standard`: default. Runs package install/doctor, CLI bootstrap help checks,
   Kova mock-provider performance, and the default Crabbox + Crabpot suites
   against cached checkouts (Crabbox also re-runs the `crabpot` lane in the
-  sandbox).
-- `full`: standard local checks plus prompt-pack smoke. With `--remote`, it
-  asks GitHub for the broader full release profile.
+  sandbox), plus one bounded Codex Crabbox break audit.
+- `full`: standard local checks plus prompt-pack smoke and the same bounded
+  Codex Crabbox break audit. With `--remote`, it asks GitHub for the broader
+  full release profile.
 
 ## Suites
 
-Default suites: `download,kova,crabbox,crabpot,prompts`. Use `--suite` with a
+Default suites: `download,kova,crabbox,crabpot,codex,prompts`. Use `--suite` with a
 comma-separated list to limit work:
 
 ```sh
 clawditor test openclaw@beta --suite github
 clawditor test openclaw@beta --suite download
 clawditor test openclaw@beta --suite kova
-clawditor test openclaw@beta --suite download,kova,prompts   # skip crabbox/crabpot
+clawditor test openclaw@beta --suite download,kova,prompts   # skip crabbox/crabpot/codex
 clawditor test openclaw@beta --dry-run
 ```
 
