@@ -764,8 +764,8 @@ async function runCrabboxLane(lane: string, candidate: Candidate, options: CliOp
     lane,
     action: "ran",
     exitCode: result.exitCode,
-    id: idMatch?.[0] ?? null,
-    url: urlMatch?.[0] ?? null,
+    id: result.providerRunIds?.[0] ?? idMatch?.[0] ?? null,
+    url: result.providerRunUrls?.[0] ?? urlMatch?.[0] ?? null,
     startedAt,
     ok: result.exitCode === 0,
     highlights: result.highlights,
@@ -868,6 +868,8 @@ function runLiveProcess(command: string[], prefix: string, options: CliOptions, 
     });
     const lines: string[] = [];
     const highlights: string[] = [];
+    const providerRunIds = new Set<string>();
+    const providerRunUrls = new Set<string>();
     let currentStep = "starting";
     let pending = "";
     let spawnError: Error | null = null;
@@ -887,6 +889,12 @@ function runLiveProcess(command: string[], prefix: string, options: CliOptions, 
       const maxLines = opts.maxLines ?? 200;
       if (lines.length > maxLines) {
         lines.splice(0, lines.length - maxLines);
+      }
+      for (const match of line.matchAll(/\b(?:tbx|cbx)_[A-Za-z0-9_-]+\b/gu)) {
+        providerRunIds.add(match[0]);
+      }
+      for (const match of line.matchAll(/https:\/\/github\.com\/openclaw\/openclaw\/actions\/runs\/[0-9]+/gu)) {
+        providerRunUrls.add(match[0]);
       }
       rememberHighlight(highlights, line);
       streamProcessOutput(options, prefix, line);
@@ -937,6 +945,8 @@ function runLiveProcess(command: string[], prefix: string, options: CliOptions, 
         output: lines.join("\n").trim(),
         outputTail: lines.slice(-30).join("\n").trim(),
         timedOut,
+        providerRunIds: [...providerRunIds],
+        providerRunUrls: [...providerRunUrls],
       });
     });
   });
@@ -1101,8 +1111,21 @@ function kovaReportHighlights(report: any): string[] {
   const failingRecords = Array.isArray(report.records)
     ? report.records.filter((record) => record?.status && !["PASS", "SKIP"].includes(record.status))
     : [];
+  const groupedOwners = new Map<string, number>();
+  const groupedViolations = new Map<string, number>();
   const groupedFailures = new Map<string, number>();
   for (const record of failingRecords) {
+    if (record.likelyOwner) {
+      groupedOwners.set(record.likelyOwner, (groupedOwners.get(record.likelyOwner) ?? 0) + 1);
+    }
+    const violations = Array.isArray(record.violations) ? record.violations : [];
+    for (const violation of violations) {
+      const message = violation?.message ?? violation;
+      if (message) {
+        const key = String(message);
+        groupedViolations.set(key, (groupedViolations.get(key) ?? 0) + 1);
+      }
+    }
     const bits = [
       record.status,
       record.scenario,
@@ -1112,6 +1135,12 @@ function kovaReportHighlights(report: any): string[] {
     ].filter(Boolean);
     const key = bits.join(" - ");
     groupedFailures.set(key, (groupedFailures.get(key) ?? 0) + 1);
+  }
+  for (const [owner, count] of [...groupedOwners.entries()].slice(0, 3)) {
+    highlights.push(`likely owner: ${owner}${count > 1 ? ` (${count}x)` : ""}`);
+  }
+  for (const [message, count] of [...groupedViolations.entries()].slice(0, 5)) {
+    highlights.push(`violation: ${message}${count > 1 ? ` (${count}x)` : ""}`);
   }
   for (const [key, count] of [...groupedFailures.entries()].slice(0, 5)) {
     highlights.push(`record: ${key}${count > 1 ? ` (${count}x)` : ""}`);
@@ -1246,11 +1275,25 @@ function writePromptManifest(outputDir: string): JsonObject[] {
   return prompts;
 }
 
-function codexAuditFinalVerdict(text: string): string {
-  const finalLine = text.trim().split(/\r?\n/u).map((line) => line.trim()).filter(Boolean).at(-1)?.toLowerCase();
-  if (finalLine === "fail") return "fail";
-  if (finalLine === "pass") return "pass";
-  return "unknown";
+function codexAuditFinalVerdict(text: string): JsonObject {
+  const firstLine = text.trim().split(/\r?\n/u).map((line) => line.trim()).filter(Boolean).at(0) ?? "";
+  const normalized = firstLine.toLowerCase();
+  if (normalized.startsWith("fail:")) {
+    return {
+      verdict: "fail",
+      reason: firstLine.slice(firstLine.indexOf(":") + 1).trim() || "model reported a product failure",
+    };
+  }
+  if (/^pass\b/u.test(normalized)) {
+    return {
+      verdict: "pass",
+      reason: firstLine.length > "pass".length ? firstLine.slice("pass".length).trim() : null,
+    };
+  }
+  return {
+    verdict: "unknown",
+    reason: firstLine || null,
+  };
 }
 
 function codexAuditPromptText(candidate: Candidate, options: CliOptions, outputDir: string): string {
@@ -1340,7 +1383,8 @@ async function runCodexAudit(candidate: Candidate, profile: Profile, options: Cl
   } catch {
     lastMessage = "";
   }
-  const modelVerdict = codexAuditFinalVerdict(lastMessage || result.output);
+  const modelResult = codexAuditFinalVerdict(lastMessage || result.output);
+  const modelVerdict = modelResult.verdict;
   const harnessOk = result.exitCode === 0 && !result.timedOut && Boolean(lastMessage);
   const run = {
     type: "codex",
@@ -1352,6 +1396,7 @@ async function runCodexAudit(candidate: Candidate, profile: Profile, options: Cl
     ok: modelVerdict !== "fail",
     harnessOk,
     modelVerdict,
+    modelReason: modelResult.reason,
     prompt: relative(outputDir, promptPath),
     output: relative(outputDir, outputPath),
     lastMessage: existsSync(lastMessagePath) ? relative(outputDir, lastMessagePath) : null,
@@ -1368,6 +1413,13 @@ async function runCodexAudit(candidate: Candidate, profile: Profile, options: Cl
 function statusText(run: JsonObject): string {
   if (run.action === "dry-run") return "dry-run";
   if (run.action === "blocked") return `blocked${run.exitCode !== undefined ? ` (exit ${run.exitCode})` : ""}`;
+  if (run.type === "kova" && run.ok === false && run.reportOk === false) {
+    return `product fail (report verdict fail; process exit ${run.exitCode ?? "unknown"})`;
+  }
+  if (run.type === "codex" && run.modelVerdict === "fail") {
+    const harness = run.harnessOk === true ? "harness pass" : "harness blocked";
+    return `product fail (model verdict fail; ${harness}${run.exitCode !== undefined ? `; exit ${run.exitCode}` : ""})`;
+  }
   if (run.ok === true) return `pass${run.exitCode !== undefined ? ` (exit ${run.exitCode})` : ""}`;
   if (run.ok === false) return `fail${run.exitCode !== undefined ? ` (exit ${run.exitCode})` : ""}`;
   if (run.exitCode !== undefined) return `exit ${run.exitCode}`;
@@ -1477,6 +1529,7 @@ function codexSummaryLines(run: JsonObject | null): string[] {
     `- model verdict: ${run.modelVerdict ?? "unknown"}`,
     `- harness: ${run.harnessOk === false ? "blocked" : run.harnessOk === true ? "pass" : "not run"}`,
   ];
+  if (run.modelReason) lines.push(`- model reason: ${run.modelReason}`);
   if (run.startedAt) lines.push(`- started: ${run.startedAt}`);
   if (run.timedOut) lines.push("- timed out: true");
   if (run.prompt) lines.push(`- prompt: ${run.prompt}`);

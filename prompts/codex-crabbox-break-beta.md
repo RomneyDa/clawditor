@@ -23,9 +23,10 @@ Rules:
   capacity is not a product failure. Explain it, but do not mark the candidate
   failed only for harness problems.
 - If you find a product issue with command evidence that should block or
-  materially delay this beta, end your final response with exactly `fail`.
-- If you cannot find a product issue after the bounded audit, end your final
-  response with exactly `pass`.
+  materially delay this beta, begin your final response with `fail: ` followed
+  by a one-line reason.
+- If you cannot find a product issue after the bounded audit, begin your final
+  response with `pass`.
 
 Expected output:
 
@@ -34,4 +35,4 @@ Expected output:
 - Crabbox/Testbox provider IDs and URLs when available.
 - Findings with evidence.
 - Harness gaps, if any.
-- Final line: exactly `pass` or exactly `fail`.
+- First line: `pass` or `fail: <one-line reason>`.
